@@ -1,0 +1,391 @@
+'use strict';
+
+const API = '';
+const TOKEN_KEY = 'epqms.session';
+const USER_KEY = 'epqms.user';
+const state = { dashboard: {}, patients: [], queue: [], doctors: [], treatments: [], user: null, loading: false, treatmentTab: 'active' };
+const content = document.getElementById('content');
+const toastEl = document.getElementById('toast');
+const modalRoot = document.getElementById('modalRoot');
+const authView = document.getElementById('authView');
+const appShell = document.getElementById('appShell');
+let toastTimer;
+let activeModal = null;
+let modalReturnFocus = null;
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+function showToast(message, type = 'info') {
+  toastEl.innerHTML = `<span aria-hidden="true">${type === 'success' ? '✓' : type === 'error' ? '✕' : type === 'warning' ? '⚠' : 'ℹ'}</span><span>${escapeHtml(message)}</span><button class="toast-close" aria-label="Dismiss notification">×</button>`;
+  toastEl.className = `toast show ${type}`;
+  toastEl.querySelector('.toast-close').onclick = () => { toastEl.className = 'toast'; };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, 3600);
+}
+function toast(message, type = 'info') { showToast(message, type); }
+function setButtonLoading(button, loading, label) {
+  if (!button) return;
+  if (loading) {
+    button.dataset.originalText = button.innerHTML;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.innerHTML = `<span class="spinner" aria-hidden="true"></span>${escapeHtml(label || 'Working…')}`;
+  } else {
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+    button.innerHTML = button.dataset.originalText || button.innerHTML;
+    delete button.dataset.originalText;
+  }
+}
+function token() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
+async function api(path, options = {}) {
+  let response;
+  try {
+    response = await fetch(`${API}${path}`, {
+      ...options,
+      headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(token() ? { Authorization: `Bearer ${token()}` } : {}), ...options.headers }
+    });
+  } catch (_) { throw new Error('Server unavailable. Check that the local C++ web server is running.'); }
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (_) { throw new Error('The server returned an invalid response.'); }
+  if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/api/auth/')) expireSession();
+    throw new Error(body?.error || `Request failed (${response.status})`);
+  }
+  return body;
+}
+const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
+function validIdentity(value) {
+  const v = value.trim();
+  return /^[A-Za-z0-9_.-]{3,40}$/.test(v) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+function authPage(mode = 'login') {
+  appShell.hidden = true;
+  authView.hidden = false;
+  const isRegister = mode === 'register';
+  authView.innerHTML = `<section class="auth-card" aria-labelledby="authTitle"><div class="auth-brand"><span class="brand-icon" aria-hidden="true">✚</span><div><strong>Emergency Patient Queue</strong><span>Management System</span></div></div><div class="auth-heading"><p class="eyebrow">SECURE STAFF ACCESS</p><h1 id="authTitle">${isRegister ? 'Create your account' : 'Welcome back'}</h1><p>${isRegister ? 'Register to manage hospital operations.' : 'Sign in to continue to your hospital dashboard.'}</p></div><form id="authForm" novalidate>${isRegister ? `<div class="field"><label for="authFullName">Full name</label><input id="authFullName" name="fullName" autocomplete="name" maxlength="100" required><small class="field-error" data-error="fullName"></small></div>` : ''}<div class="field"><label for="authUsername">Username or email</label><input id="authUsername" name="username" autocomplete="${isRegister ? 'username' : 'username'}" maxlength="254" required><small class="field-error" data-error="username"></small></div><div class="field"><label for="authPassword">Password</label><input id="authPassword" name="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" minlength="8" maxlength="128" required><small class="field-error" data-error="password"></small></div>${isRegister ? `<div class="field"><label for="authConfirm">Confirm password</label><input id="authConfirm" name="confirmPassword" type="password" autocomplete="new-password" required><small class="field-error" data-error="confirmPassword"></small></div>` : ''}<div class="auth-error" id="authError" role="alert"></div><button class="btn auth-submit" type="submit" id="authSubmit">${isRegister ? 'Create Account' : 'Sign In'}</button></form><p class="auth-switch">${isRegister ? 'Already have an account?' : 'Don’t have an account?'} <button type="button" id="authSwitch">${isRegister ? 'Sign in' : 'Register'}</button></p><p class="auth-footnote">Local account · Passwords are stored as salted hashes</p></section>`;
+  document.getElementById('authSwitch').onclick = () => authPage(isRegister ? 'login' : 'register');
+  const form = document.getElementById('authForm');
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const fullName = document.getElementById('authFullName')?.value.trim() || '';
+    const username = document.getElementById('authUsername').value.trim();
+    const password = document.getElementById('authPassword').value;
+    const confirm = document.getElementById('authConfirm')?.value;
+    const errors = {};
+    if (isRegister && !fullName) errors.fullName = 'Enter your full name.';
+    if (!validIdentity(username)) errors.username = 'Enter a valid username or email address.';
+    if (password.length < 8 || password.length > 128) errors.password = 'Password must be 8–128 characters.';
+    if (isRegister && password !== confirm) errors.confirmPassword = 'Passwords do not match.';
+    Object.keys(errors).forEach(key => { const target = form.querySelector(`[data-error="${key}"]`); target.textContent = errors[key]; target.previousElementSibling?.setAttribute('aria-invalid', 'true'); });
+    if (Object.keys(errors).length) return;
+    const button = document.getElementById('authSubmit');
+    setButtonLoading(button, true, isRegister ? 'Creating account…' : 'Signing in…');
+    document.getElementById('authError').textContent = '';
+    try {
+      if (isRegister) {
+        await post('/api/auth/register', { fullName, username, password });
+        showToast('Account created successfully. Please sign in.', 'success');
+        authPage('login');
+        document.getElementById('authUsername').value = username;
+      } else {
+        const result = await post('/api/auth/login', { username, password });
+        sessionStorage.setItem(TOKEN_KEY, result.token);
+        sessionStorage.setItem(USER_KEY, JSON.stringify(result.user));
+        state.user = result.user;
+        showToast('Login successful.', 'success');
+        location.hash = 'dashboard';
+        await enterApp();
+      }
+    } catch (error) {
+      if (error.message.includes('Invalid username/email')) document.getElementById('authError').textContent = 'Invalid username/email or password.';
+      else if (isRegister && error.message.toLowerCase().includes('already registered')) document.querySelector('[data-error="username"]').textContent = 'That username or email is already registered.';
+      else document.getElementById('authError').textContent = error.message;
+    } finally { if (document.getElementById('authSubmit') === button) setButtonLoading(button, false); }
+  };
+  document.getElementById(isRegister ? 'authFullName' : 'authUsername').focus();
+}
+function expireSession() {
+  sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY); state.user = null;
+  appShell.hidden = true; location.hash = ''; authPage('login');
+}
+function redirectToAuthentication() {
+  const requested = location.hash;
+  if (requested && requested !== '#register') history.replaceState(null, '', `${location.pathname}${location.search}`);
+  authPage(requested === '#register' ? 'register' : 'login');
+}
+async function logout() {
+  try { await post('/api/auth/logout'); } catch (_) { /* The local session is always cleared. */ }
+  expireSession(); showToast('You have been signed out.', 'info');
+}
+function normalizePatient(p) {
+  return { ...p, id: String(p.id), type: p.type === 'emergency' ? 'Emergency' : 'Regular', wait: p.waitingTime ?? 0,
+    status: String(p.status || '').replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) };
+}
+function normalizeDoctor(d) {
+  const status = d.availability === 'available' ? 'Available' : d.availability === 'on_leave' ? 'On Leave' : 'Busy';
+  return { ...d, id: String(d.id), spec: d.specialization, status,
+    patient: d.currentPatientId == null ? '-' : String(d.currentPatientId) };
+}
+async function refreshData() {
+  state.loading = true;
+  try {
+    const [dashboard, patients, queue, doctors, treatments] = await Promise.all([
+      api('/api/dashboard'), api('/api/patients'), api('/api/queue'), api('/api/doctors'), api('/api/treatments')
+    ]);
+    state.dashboard = dashboard; state.patients = patients.map(normalizePatient); state.queue = queue.map(normalizePatient);
+    state.doctors = doctors.map(normalizeDoctor); state.treatments = treatments;
+  } finally { state.loading = false; }
+}
+function updateUserUI() {
+  const name = state.user?.fullName || 'Staff Member';
+  document.getElementById('userName').textContent = name;
+  document.getElementById('userInitials').textContent = name.trim().split(/\s+/).slice(0, 2).map(x => x[0]).join('').toUpperCase();
+}
+async function enterApp() {
+  authView.hidden = true; appShell.hidden = false;
+  try {
+    state.user = await api('/api/auth/me');
+    sessionStorage.setItem(USER_KEY, JSON.stringify(state.user));
+    updateUserUI();
+    if (!location.hash || location.hash === '#login' || location.hash === '#register') location.hash = 'dashboard';
+    state.loading = true; render();
+    await refreshData(); render();
+  } catch (error) { if (token()) showToast(error.message, 'error'); expireSession(); }
+}
+function badge(status) {
+  const c = status === 'Waiting' ? 'waiting' : status === 'Completed' ? 'success' : status === 'Under Treatment' ? 'under' :
+    status === 'Available' ? 'success' : status === 'Busy' ? 'busy' : status === 'On Leave' ? 'leave' : status === 'Emergency' ? 'critical' : 'regular';
+  return `<span class="badge ${c}">${escapeHtml(status)}</span>`;
+}
+function severityBadge(n) { return `<span class="severity severity-${n}"><span aria-hidden="true">${n >= 5 ? '!' : '●'}</span> ${n >= 5 ? 'Critical' : n >= 3 ? 'Moderate' : 'Mild'} · ${n}/5</span>`; }
+function pageTitle(title, sub, action = '') { return `<div class="page-title"><div><h1>${title}</h1><p>${sub}</p></div>${action}</div>`; }
+function statCard(label, value, icon, cls) { return `<article class="card stat"><div><div class="label">${label}</div><div class="value">${escapeHtml(value)}</div></div><div class="stat-icon ${cls}" aria-hidden="true">${icon}</div></article>`; }
+function emptyState(title, description, action = '') { return `<div class="empty-state"><span class="empty-icon" aria-hidden="true">⌕</span><h3>${title}</h3><p>${description}</p>${action}</div>`; }
+function queueTable(rows, actions = true) {
+  if (!rows.length) return emptyState('No patients are currently waiting.', 'The emergency queue is clear.');
+  return `<div class="table-wrap"><table class="table"><thead><tr><th>Patient ID</th><th>Patient</th><th>Severity</th><th>Priority</th><th>Waiting</th><th>Status</th>${actions ? '<th>Action</th>' : ''}</tr></thead><tbody>${rows.map((p, i) => `<tr><td><span class="queue-rank ${p.severity >= 5 ? 'rank-critical' : ''}">${i + 1}</span> <b>${escapeHtml(p.id)}</b></td><td>${escapeHtml(p.name)}</td><td>${severityBadge(Number(p.severity))}</td><td><b class="priority-number">${escapeHtml(p.priority)}</b></td><td>${escapeHtml(p.wait)} min</td><td>${badge(p.status)}</td>${actions ? `<td><button class="mini-btn detail" data-id="${escapeHtml(p.id)}">View</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`;
+}
+function dashboard() {
+  const d = state.dashboard;
+  const doctors = state.doctors;
+  const totalDoctors = doctors.length;
+  const available = doctors.filter(x => x.status === 'Available').length;
+  const busy = doctors.filter(x => x.status === 'Busy').length;
+  return pageTitle('Dashboard', 'Overview of hospital operations') + `<div class="cards">
+    ${statCard('Total Patients', d.totalPatients ?? 0, '♟', 'i-blue')}${statCard('Waiting', d.waitingPatients ?? 0, '◷', 'i-orange')}${statCard('Under Treatment', d.underTreatment ?? 0, '⚕', 'i-green')}${statCard('Completed', d.completedPatients ?? 0, '✓', 'i-purple')}</div>
+    <div class="grid-2"><section class="panel"><div class="panel-head"><div><p class="eyebrow">LIVE PRIORITY ORDER</p><h3>Emergency Queue <span class="muted">· Top 5</span></h3></div><button class="text-btn" data-go="queue">View queue →</button></div>${queueTable(state.queue.slice(0, 5), false)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">CURRENT CAPACITY</p><h3>Doctor Status</h3></div></div>${totalDoctors ? `<div class="doctor-summary"><div class="donut" style="--available:${totalDoctors ? available / totalDoctors * 100 : 0}%"><span><b>${totalDoctors}</b><small>Total doctors</small></span></div><div class="legend"><div><i class="dot green"></i>Available <b>${available}</b></div><div><i class="dot blue"></i>Busy <b>${busy}</b></div></div></div>` : emptyState('No doctors registered.', 'Add a doctor to begin assigning patients.', '<button class="btn" data-go="doctors">View doctors</button>')}</section></div>`;
+}
+function patientsPage() {
+  return pageTitle('Patients', 'Search and manage registered patients', '<button class="btn" id="addPatient">＋ Add patient</button>') +
+    '<section class="panel"><div class="toolbar"><label class="table-search"><span aria-hidden="true">⌕</span><input id="patientSearch" type="search" placeholder="Search name, ID or condition" aria-label="Search patients"></label><select id="typeFilter" aria-label="Filter by patient type"><option>All types</option><option>Emergency</option><option>Regular</option></select><select id="statusFilter" aria-label="Filter by status"><option>All statuses</option><option>Waiting</option><option>Called</option><option>Under Treatment</option><option>Completed</option></select></div><div id="patientTable" class="table-wrap"></div></section>';
+}
+function renderPatientTable() {
+  const target = document.getElementById('patientTable'); if (!target) return;
+  const q = (document.getElementById('patientSearch')?.value || '').toLowerCase();
+  const type = document.getElementById('typeFilter')?.value || 'All types'; const status = document.getElementById('statusFilter')?.value || 'All statuses';
+  const rows = state.patients.filter(p => (!q || [p.id, p.name, p.condition].some(x => String(x).toLowerCase().includes(q))) && (type === 'All types' || p.type === type) && (status === 'All statuses' || p.status === status));
+  target.innerHTML = rows.length ? `<table class="table"><thead><tr><th>Patient ID</th><th>Name</th><th>Age</th><th>Type</th><th>Condition</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(p => `<tr><td><b>${escapeHtml(p.id)}</b></td><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.age)}</td><td>${badge(p.type)}</td><td>${escapeHtml(p.condition)}</td><td>${severityBadge(Number(p.severity))}</td><td>${badge(p.status)}</td><td><button class="mini-btn detail" data-id="${escapeHtml(p.id)}">Details</button></td></tr>`).join('')}</tbody></table>` : emptyState(state.patients.length ? 'No matching patients.' : 'No patients registered yet.', state.patients.length ? 'Try changing your search or filters.' : 'Add a patient to begin managing the queue.', state.patients.length ? '' : '<button class="btn" id="emptyAddPatient">＋ Add patient</button>');
+  target.querySelectorAll('.detail').forEach(button => button.onclick = () => openPatientDetails(button.dataset.id));
+  target.querySelector('#emptyAddPatient')?.addEventListener('click', openPatientModal);
+}
+function queuePage() { return pageTitle('Emergency Queue', 'Priority order calculated by the C++ backend', '<button class="btn" id="callNext">⚡ Call next patient</button>') + `<section class="panel">${queueTable(state.queue)}<div class="callout"><b>Priority handling</b><br>Priority scores and queue order are supplied by the hospital backend.</div></section>`; }
+function doctorsPage() {
+  const rows = state.doctors.map(d => `<tr><td><b>${escapeHtml(d.id)}</b></td><td>${escapeHtml(d.name)}</td><td>${escapeHtml(d.spec)}</td><td>${badge(d.status)}</td><td>${d.patient === '-' ? '<span class="muted">—</span>' : `<button class="text-btn detail" data-id="${escapeHtml(d.patient)}">Patient ${escapeHtml(d.patient)}</button>`}</td></tr>`).join('');
+  return pageTitle('Doctors', 'Availability and patient assignments', '<button class="btn" id="addDoctor">＋ Add doctor</button>') + `<section class="panel">${rows ? `<div class="table-wrap"><table class="table"><thead><tr><th>Doctor ID</th><th>Name</th><th>Specialization</th><th>Availability</th><th>Current patient</th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState('No doctors registered.', 'Add a doctor to begin assigning patients.', '<button class="btn" id="emptyAddDoctor">＋ Add doctor</button>')}</section>`;
+}
+function treatmentsPage() {
+  const active = state.patients.filter(p => p.status === 'Under Treatment');
+  const completed = state.treatments.filter(t => t.completed || t.status === 'completed');
+  const selected = state.treatmentTab === 'active' ? active : completed;
+  const rows = state.treatmentTab === 'active' ? active.map(p => { const doctor = state.doctors.find(d => d.patient === p.id); return `<tr><td><b>${escapeHtml(p.id)}</b></td><td>${escapeHtml(p.name)}</td><td>${escapeHtml(doctor?.name || '—')}</td><td>${badge('Under Treatment')}</td><td><button class="mini-btn completeTreatment" data-id="${escapeHtml(p.id)}">Complete</button></td></tr>`; }).join('') : completed.map(t => { const p = state.patients.find(x => x.id === String(t.patientId)); const d = state.doctors.find(x => x.id === String(t.doctorId)); return `<tr><td><b>${escapeHtml(t.patientId)}</b></td><td>${escapeHtml(p?.name || '—')}</td><td>${escapeHtml(d?.name || t.doctorId)}</td><td>${escapeHtml(t.diagnosis || '—')}</td><td>${badge('Completed')}</td><td>${escapeHtml(t.description || '—')}</td></tr>`; }).join('');
+  const head = state.treatmentTab === 'active' ? '<tr><th>Patient ID</th><th>Patient name</th><th>Doctor</th><th>Status</th><th>Action</th></tr>' : '<tr><th>Patient ID</th><th>Patient name</th><th>Doctor</th><th>Diagnosis</th><th>Status</th><th>Treatment details</th></tr>';
+  return pageTitle('Treatments', 'Track active care and completed records') + `<section class="panel"><div class="tab-row" role="tablist"><button class="tab ${state.treatmentTab === 'active' ? 'active' : ''}" role="tab" aria-selected="${state.treatmentTab === 'active'}" data-treatment-tab="active">Active <span>${active.length}</span></button><button class="tab ${state.treatmentTab === 'completed' ? 'active' : ''}" role="tab" aria-selected="${state.treatmentTab === 'completed'}" data-treatment-tab="completed">Completed <span>${completed.length}</span></button></div>${selected.length ? `<div class="table-wrap"><table class="table"><thead>${head}</thead><tbody>${rows}</tbody></table></div>` : emptyState(state.treatmentTab === 'active' ? 'No active treatments.' : 'No completed treatments yet.', state.treatmentTab === 'active' ? 'Patients appear here after a doctor starts treatment.' : 'Completed treatment records will appear here.')}</section>`;
+}
+function statisticsPage() {
+  const d = state.dashboard; const n = key => Number(d[key] || 0); const hasPatientData = n('totalPatients') > 0; const types = { emergency: state.patients.filter(p => p.type === 'Emergency').length, regular: state.patients.filter(p => p.type === 'Regular').length };
+  const severity = [1, 2, 3, 4, 5].map(level => state.patients.filter(p => Number(p.severity) === level).length);
+  const doctorCounts = { available: state.doctors.filter(x => x.status === 'Available').length, busy: state.doctors.filter(x => x.status === 'Busy').length };
+  if (!hasPatientData && !state.doctors.length && !state.treatments.length) return pageTitle('Statistics', 'Current hospital activity') + emptyState('No data available.', 'Statistics will appear as patients, doctors, and treatments are added.');
+  const maxType = Math.max(types.emergency, types.regular, 1); const maxSeverity = Math.max(...severity, 1); const maxStatus = Math.max(n('waitingPatients'), n('underTreatment'), n('completedPatients'), 1);
+  const bars = (values, max, labels) => `<div class="bar-chart">${values.map((value, i) => `<div class="bar" style="--bar-height:${Math.max(value ? 8 : 0, value / max * 100)}%"><span>${value}</span><label>${labels[i]}</label></div>`).join('')}</div>`;
+  return pageTitle('Statistics', 'Metrics calculated from current backend records') + `<div class="cards stats-cards">${statCard('Total patients', n('totalPatients'), '♟', 'i-blue')}${statCard('Total doctors', state.doctors.length, '⚕', 'i-green')}${statCard('Available doctors', doctorCounts.available, '✓', 'i-purple')}${statCard('Busy doctors', doctorCounts.busy, '◷', 'i-orange')}</div><div class="charts"><section class="panel"><div class="panel-head"><h3>Patients by status</h3></div>${hasPatientData ? bars([n('waitingPatients'), n('underTreatment'), n('completedPatients')], maxStatus, ['Waiting', 'In care', 'Completed']) : emptyState('No data available.', 'No patients are registered.')}</section><section class="panel"><div class="panel-head"><h3>Patient type</h3></div>${hasPatientData ? bars([types.emergency, types.regular], maxType, ['Emergency', 'Regular']) : emptyState('No data available.', 'No patient records to compare.')}</section><section class="panel"><div class="panel-head"><h3>Patients by severity</h3></div>${hasPatientData ? bars(severity, maxSeverity, ['1', '2', '3', '4', '5']) : emptyState('No data available.', 'No severity records to display.')}</section></div><div class="cards stats-cards">${statCard('Average waiting', `${d.averageWaitingTime ?? 0} min`, '◷', 'i-blue')}${statCard('Total treatments', n('totalTreatments'), '▣', 'i-purple')}${statCard('Critical cases', n('criticalPatients'), '⚠', 'i-orange')}${statCard('Doctor availability', `${doctorCounts.available} / ${state.doctors.length}`, '⚕', 'i-green')}</div>`;
+}
+function dataPage() { return pageTitle('Data management', 'Save and restore hospital records') + `<div class="info-grid"><section class="panel"><div class="panel-head"><h3>Persistence</h3></div><p class="muted">Save patient, doctor, and treatment records through the C++ backend.</p><div class="action-row"><button class="btn" id="saveData">Save data</button><button class="btn secondary" id="loadData">Load data</button></div></section><section class="panel"><h3>Local records</h3><div class="detail-list"><div class="detail-item"><small>Patients</small><b>data/patients.txt</b></div><div class="detail-item"><small>Doctors</small><b>data/doctors.txt</b></div><div class="detail-item"><small>Treatments</small><b>data/treatments.txt</b></div></div></section></div>`; }
+function aboutPage() { return `<section class="hero"><div><p class="eyebrow">C++ OOP COURSE PROJECT</p><h2>Emergency Patient Queue Management System</h2><p>A local hospital management application powered by a C++ object-oriented backend and HTTP/JSON web interface.</p></div><div class="hero-art" aria-hidden="true">🏥</div></section><div class="feature-grid">${[['⚡','Priority-based emergency queue'],['♟','Patient management'],['⚕','Doctor management'],['▣','Treatment records'],['▥','Backend statistics'],['▤','File persistence'],['⌘','Authenticated web interface']].map(x => `<article class="card feature"><div class="ficon">${x[0]}</div><h3>${x[1]}</h3></article>`).join('')}</div><section class="panel about-tech"><h3>Technology</h3><p>C++ · HTML · CSS · JavaScript · C++ HTTP backend</p></section>`; }
+function searchPage() {
+  const query = state.searchQuery || '';
+  const q = query.toLowerCase();
+  const patientsFound = state.patients.filter(p => [p.id, p.name, p.condition].some(x => String(x).toLowerCase().includes(q)));
+  const doctorsFound = state.doctors.filter(d => [d.id, d.name, d.spec].some(x => String(x).toLowerCase().includes(q)));
+  return pageTitle('Search results', `Results matching “${escapeHtml(query)}”`) +
+    `<div class="info-grid"><section class="panel"><div class="panel-head"><h3>Patients <span class="muted">· ${patientsFound.length}</span></h3></div>${patientsFound.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Patient</th><th>Condition</th><th>Status</th><th></th></tr></thead><tbody>${patientsFound.map(p => `<tr><td><b>${escapeHtml(p.id)}</b> · ${escapeHtml(p.name)}</td><td>${escapeHtml(p.condition)}</td><td>${badge(p.status)}</td><td><button class="mini-btn" data-search-patient="${escapeHtml(p.id)}">Details</button></td></tr>`).join('')}</tbody></table></div>` : emptyState('No matching patients.', 'No patient record matches this search.')}</section><section class="panel"><div class="panel-head"><h3>Doctors <span class="muted">· ${doctorsFound.length}</span></h3></div>${doctorsFound.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Doctor</th><th>Specialization</th><th>Status</th></tr></thead><tbody>${doctorsFound.map(d => `<tr><td><b>${escapeHtml(d.name)}</b><br><small>${escapeHtml(d.id)}</small></td><td>${escapeHtml(d.spec)}</td><td>${badge(d.status)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('No matching doctors.', 'No doctor record matches this search.')}</section></div>`;
+}
+function render() {
+  if (!token()) { redirectToAuthentication(); return; }
+  const view = location.hash.slice(1).split('?')[0] || 'dashboard';
+  const pages = { dashboard, patients: patientsPage, queue: queuePage, doctors: doctorsPage, treatments: treatmentsPage, statistics: statisticsPage, data: dataPage, about: aboutPage, search: searchPage };
+  document.querySelectorAll('.nav-item').forEach(x => { const active = x.dataset.view === view; x.classList.toggle('active', active); if (active) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current'); });
+  content.innerHTML = state.loading ? '<div class="loading-page"><span class="spinner" aria-hidden="true"></span><span>Loading hospital data…</span></div>' : (pages[view] || dashboard)();
+  bindActions();
+}
+async function refreshAndRender(message, type = 'success') { state.loading = true; render(); await refreshData(); render(); if (message) toast(message, type); }
+function bindActions() {
+  document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { location.hash = b.dataset.go; closeDrawer(); });
+  document.querySelectorAll('.nav-item').forEach(b => b.onclick = () => { location.hash = b.dataset.view; closeDrawer(); });
+  document.querySelectorAll('.detail').forEach(b => b.onclick = () => openPatientDetails(b.dataset.id));
+  document.querySelectorAll('[data-search-patient]').forEach(b => b.onclick = () => openPatientDetails(b.dataset.searchPatient));
+  document.getElementById('addPatient')?.addEventListener('click', openPatientModal);
+  document.getElementById('emptyAddDoctor')?.addEventListener('click', openDoctorModal);
+  document.getElementById('addDoctor')?.addEventListener('click', openDoctorModal);
+  document.getElementById('callNext')?.addEventListener('click', async e => action(e.currentTarget, 'Calling next…', async () => { const p = await post('/api/queue/call-next'); await refreshAndRender(`Patient ${p.id} ${p.name} called.`, 'success'); }));
+  document.getElementById('saveData')?.addEventListener('click', e => action(e.currentTarget, 'Saving…', async () => { const r = await post('/api/data/save'); toast(r.message || 'Data saved successfully.', 'success'); }));
+  document.getElementById('loadData')?.addEventListener('click', e => action(e.currentTarget, 'Loading…', async () => { await post('/api/data/load'); await refreshAndRender('Data loaded successfully.', 'success'); }));
+  document.querySelectorAll('[data-treatment-tab]').forEach(b => b.onclick = () => { state.treatmentTab = b.dataset.treatmentTab; render(); });
+  document.getElementById('patientSearch')?.addEventListener('input', renderPatientTable);
+  document.getElementById('typeFilter')?.addEventListener('change', renderPatientTable);
+  document.getElementById('statusFilter')?.addEventListener('change', renderPatientTable);
+  if (document.getElementById('patientTable')) renderPatientTable();
+  document.querySelectorAll('.completeTreatment').forEach(b => b.onclick = () => openCompleteTreatmentModal(b.dataset.id));
+}
+async function action(button, label, callback) {
+  if (!button || button.disabled) return;
+  setButtonLoading(button, true, label);
+  try { await callback(); } catch (error) { toast(error.message, 'error'); }
+  finally { if (button.isConnected) setButtonLoading(button, false); }
+}
+function showModal(title, body, onSubmit) {
+  closeModal();
+  modalReturnFocus = document.activeElement;
+  modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-backdrop><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><header class="modal-header"><h2 id="modalTitle">${title}</h2><button type="button" class="icon-btn modal-close" aria-label="Close dialog">×</button></header><div class="modal-body">${body}</div></section></div>`;
+  activeModal = modalRoot.querySelector('.modal');
+  modalRoot.querySelector('.modal-close').onclick = closeModal;
+  modalRoot.querySelector('[data-modal-backdrop]').onclick = e => { if (e.target === e.currentTarget) closeModal(); };
+  activeModal.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeModal();
+    if (e.key === 'Tab') {
+      const items = [...activeModal.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')];
+      if (!items.length) return;
+      if (e.shiftKey && document.activeElement === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === items[items.length - 1]) { e.preventDefault(); items[0].focus(); }
+    }
+  });
+  activeModal.querySelector('form')?.addEventListener('submit', e => { e.preventDefault(); onSubmit?.(e); });
+  activeModal.querySelector('input,select,textarea,button')?.focus();
+  document.body.classList.add('modal-open');
+  appShell.inert = true;
+}
+function closeModal() {
+  modalRoot.innerHTML = ''; activeModal = null; document.body.classList.remove('modal-open'); appShell.inert = false;
+  if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
+  modalReturnFocus = null;
+}
+function openPatientModal() {
+  showModal('Register patient', `<form id="patientForm"><div class="form-grid"><div class="field"><label for="newPatientId">Patient ID</label><input id="newPatientId" type="number" min="1" required></div><div class="field"><label for="newPatientName">Full name</label><input id="newPatientName" maxlength="100" required></div><div class="field"><label for="newPatientAge">Age</label><input id="newPatientAge" type="number" min="0" max="130" required></div><div class="field"><label for="newPatientSeverity">Severity</label><select id="newPatientSeverity"><option value="5">5 · Critical</option><option value="4">4 · High</option><option value="3">3 · Moderate</option><option value="2">2 · Low</option><option value="1">1 · Mild</option></select></div><div class="field full"><label for="newPatientCondition">Condition</label><input id="newPatientCondition" maxlength="200" required></div><div class="field"><label for="newPatientType">Patient type</label><select id="newPatientType"><option value="emergency">Emergency</option><option value="regular">Regular</option></select></div><label class="check-field"><input id="newPatientCritical" type="checkbox"> Critical condition</label></div><div class="modal-actions"><button type="button" class="btn secondary" data-cancel>Cancel</button><button type="submit" class="btn" id="submitPatient">Register patient</button></div></form>` , async () => {
+    const button = document.getElementById('submitPatient'); const type = document.getElementById('newPatientType').value;
+    await action(button, 'Registering…', async () => { await post('/api/patients', { id: Number(document.getElementById('newPatientId').value), name: document.getElementById('newPatientName').value.trim(), age: Number(document.getElementById('newPatientAge').value), condition: document.getElementById('newPatientCondition').value.trim(), severity: Number(document.getElementById('newPatientSeverity').value), type, critical: type === 'emergency' && document.getElementById('newPatientCritical').checked }); closeModal(); await refreshAndRender('Patient registered successfully.', 'success'); });
+  });
+  modalRoot.querySelector('[data-cancel]').onclick = closeModal;
+}
+function openDoctorModal() {
+  showModal('Add doctor', `<form id="doctorForm"><div class="form-grid"><div class="field"><label for="doctorId">Doctor ID</label><input id="doctorId" type="number" min="1" required></div><div class="field"><label for="doctorName">Full name</label><input id="doctorName" maxlength="100" required></div><div class="field full"><label for="doctorSpecialization">Specialization</label><select id="doctorSpecialization" required><option value="">Select specialization</option><option>General Medicine</option><option>Cardiology</option><option>Neurology</option><option>Orthopedics</option><option>Pediatrics</option><option>Dermatology</option><option>Gynecology</option><option>Oncology</option><option>Emergency Medicine</option><option>Surgery</option><option value="Other">Other</option></select></div><div class="field full" id="customSpecializationField" hidden><label for="customSpecialization">Custom specialization</label><input id="customSpecialization" maxlength="100"></div></div><div class="modal-actions"><button type="button" class="btn secondary" data-cancel>Cancel</button><button type="submit" class="btn" id="submitDoctor">Add doctor</button></div></form>`, async () => {
+    const button = document.getElementById('submitDoctor');
+    const selected = document.getElementById('doctorSpecialization').value;
+    const custom = document.getElementById('customSpecialization').value.trim();
+    const specialization = selected === 'Other' ? custom : selected;
+    if (!specialization) {
+      const input = selected === 'Other' ? document.getElementById('customSpecialization') : document.getElementById('doctorSpecialization');
+      input.setCustomValidity('Please select or enter a specialization.'); input.reportValidity(); input.setCustomValidity('');
+      return;
+    }
+    await action(button, 'Adding…', async () => { await post('/api/doctors', { id: Number(document.getElementById('doctorId').value), name: document.getElementById('doctorName').value.trim(), specialization }); closeModal(); await refreshAndRender('Doctor added successfully.', 'success'); });
+  });
+  const specializationSelect = modalRoot.querySelector('#doctorSpecialization');
+  const customField = modalRoot.querySelector('#customSpecializationField');
+  const customInput = modalRoot.querySelector('#customSpecialization');
+  specializationSelect.addEventListener('change', () => {
+    const showCustom = specializationSelect.value === 'Other';
+    customField.hidden = !showCustom;
+    customInput.required = showCustom;
+    if (!showCustom) customInput.value = '';
+  });
+  modalRoot.querySelector('[data-cancel]').onclick = closeModal;
+}
+function openPatientDetails(id) {
+  const p = state.patients.find(x => x.id === String(id)); if (!p) return;
+  const available = state.doctors.filter(d => d.status === 'Available');
+  const canAssign = p.status === 'Called' && available.length > 0;
+  const assignedDoctor = state.doctors.find(d => d.patient === p.id);
+  showModal(canAssign ? 'Assign doctor' : `Patient ${escapeHtml(p.id)}`, `<div class="patient-detail-grid"><div><span>Name</span><b>${escapeHtml(p.name)}</b></div><div><span>Status</span>${badge(p.status)}</div><div><span>Type</span>${badge(p.type)}</div><div><span>Age</span><b>${escapeHtml(p.age)}</b></div><div><span>Condition</span><b>${escapeHtml(p.condition)}</b></div><div><span>Severity</span>${severityBadge(Number(p.severity))}</div><div><span>Waiting time</span><b>${escapeHtml(p.wait)} min</b></div><div><span>Backend priority</span><b>${escapeHtml(p.priority)}</b></div></div>${canAssign ? `<div class="field modal-followup"><label for="assignDoctor">Available doctor</label><select id="assignDoctor">${available.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)} · ${escapeHtml(d.spec)}</option>`).join('')}</select><button id="assignDoctorButton" class="btn">Assign doctor</button></div>` : ''}${p.status === 'Under Treatment' && assignedDoctor ? `<div class="modal-followup"><p class="modal-intro">Assigned to ${escapeHtml(assignedDoctor.name)}. Confirm the treatment start.</p><button id="startTreatmentButton" class="btn">Start treatment</button></div>` : ''}<div class="modal-actions"><button class="btn secondary" data-close>Close</button></div>`);
+  modalRoot.querySelector('[data-close]').onclick = closeModal;
+  modalRoot.querySelector('#assignDoctorButton')?.addEventListener('click', e => action(e.currentTarget, 'Assigning…', async () => {
+    const doctorId = Number(document.getElementById('assignDoctor').value);
+    await post(`/api/patients/${encodeURIComponent(p.id)}/assign-doctor`, { doctorId });
+    closeModal(); showToast('Doctor assigned successfully.', 'success'); openStartTreatmentModal(p.id, doctorId);
+  }));
+  modalRoot.querySelector('#startTreatmentButton')?.addEventListener('click', e => action(e.currentTarget, 'Starting…', async () => {
+    await post(`/api/patients/${encodeURIComponent(p.id)}/start-treatment`); closeModal();
+    await refreshAndRender('Treatment started.', 'success');
+  }));
+}
+function openStartTreatmentModal(patientId, doctorId) {
+  const patient = state.patients.find(p => p.id === String(patientId));
+  const doctor = state.doctors.find(d => d.id === String(doctorId));
+  showModal('Start treatment', `<p class="modal-intro">${escapeHtml(doctor?.name || 'The selected doctor')} has been assigned to ${escapeHtml(patient?.name || `Patient ${patientId}`)}. Confirm to continue.</p><div class="modal-actions"><button class="btn secondary" data-cancel>Cancel</button><button class="btn" id="confirmStartTreatment">Start treatment</button></div>`);
+  modalRoot.querySelector('[data-cancel]').onclick = closeModal;
+  modalRoot.querySelector('#confirmStartTreatment').onclick = e => action(e.currentTarget, 'Starting…', async () => {
+    await post(`/api/patients/${encodeURIComponent(patientId)}/start-treatment`);
+    closeModal(); await refreshAndRender('Treatment started.', 'success');
+  });
+}
+function openCompleteTreatmentModal(patientId) {
+  const patient = state.patients.find(p => p.id === String(patientId)); const doctor = state.doctors.find(d => d.patient === String(patientId));
+  if (!patient || !doctor) { toast('No assigned doctor was found for this patient.', 'error'); return; }
+  showModal('Complete treatment', `<p class="modal-intro">Record the treatment outcome for ${escapeHtml(patient.name)} with ${escapeHtml(doctor.name)}.</p><form><div class="field"><label for="diagnosis">Diagnosis</label><input id="diagnosis" maxlength="300" required></div><div class="field"><label for="treatmentDescription">Treatment details</label><textarea id="treatmentDescription" maxlength="2000" required></textarea></div><div class="modal-actions"><button type="button" class="btn secondary" data-cancel>Cancel</button><button type="submit" class="btn" id="submitTreatment">Complete treatment</button></div></form>`, async () => {
+    const button = document.getElementById('submitTreatment');
+    await action(button, 'Completing…', async () => { await post(`/api/patients/${encodeURIComponent(patientId)}/complete-treatment`, { doctorId: Number(doctor.id), diagnosis: document.getElementById('diagnosis').value.trim(), description: document.getElementById('treatmentDescription').value.trim() }); closeModal(); await refreshAndRender('Treatment completed successfully.', 'success'); });
+  });
+  modalRoot.querySelector('[data-cancel]').onclick = closeModal;
+}
+function closeDrawer() { document.getElementById('sidebar').classList.remove('drawer-open'); document.getElementById('drawerBackdrop').hidden = true; document.getElementById('menuToggle').setAttribute('aria-expanded', 'false'); }
+document.getElementById('menuToggle').onclick = () => {
+  const sidebar = document.getElementById('sidebar'); const open = !sidebar.classList.contains('drawer-open'); sidebar.classList.toggle('drawer-open', open);
+  document.getElementById('drawerBackdrop').hidden = !open; document.getElementById('menuToggle').setAttribute('aria-expanded', String(open));
+};
+document.getElementById('drawerBackdrop').onclick = closeDrawer;
+document.getElementById('profileToggle').onclick = () => { const menu = document.getElementById('profileDropdown'); menu.hidden = !menu.hidden; document.getElementById('profileToggle').setAttribute('aria-expanded', String(!menu.hidden)); };
+document.getElementById('logoutButton').onclick = logout;
+document.getElementById('profileAction').onclick = () => {
+  const user = state.user || {};
+  showModal('Profile', `<div class="patient-detail-grid"><div><span>Full name</span><b>${escapeHtml(user.fullName || '—')}</b></div><div><span>Username or email</span><b>${escapeHtml(user.username || '—')}</b></div><div><span>Account type</span><b>Hospital Staff</b></div></div><div class="modal-actions"><button class="btn" data-close>Done</button></div>`);
+  modalRoot.querySelector('[data-close]').onclick = closeModal;
+};
+document.addEventListener('click', event => { if (!event.target.closest('.profile-menu')) { document.getElementById('profileDropdown').hidden = true; document.getElementById('profileToggle').setAttribute('aria-expanded', 'false'); } });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if (activeModal) closeModal();
+  else if (document.getElementById('profileDropdown').hidden === false) {
+    document.getElementById('profileDropdown').hidden = true;
+    document.getElementById('profileToggle').setAttribute('aria-expanded', 'false');
+    document.getElementById('profileToggle').focus();
+  } else closeDrawer();
+});
+document.getElementById('globalSearch').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || !state.user) return;
+  state.searchQuery = event.currentTarget.value.trim();
+  if (state.searchQuery) location.hash = 'search';
+  else showToast('Enter a patient or doctor name, ID, or specialization.', 'info');
+  if (location.hash === '#search') render();
+});
+window.addEventListener('hashchange', () => {
+  if (!token()) { redirectToAuthentication(); return; }
+  if (!location.hash || location.hash === '#login' || location.hash === '#register') { location.hash = 'dashboard'; return; }
+  if (!appShell.hidden) render();
+});
+(async function initialize() {
+  if (!token()) { redirectToAuthentication(); return; }
+  try { state.user = JSON.parse(sessionStorage.getItem(USER_KEY) || 'null'); await enterApp(); }
+  catch (_) { expireSession(); }
+})();

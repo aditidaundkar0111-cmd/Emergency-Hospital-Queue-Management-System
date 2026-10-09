@@ -1,0 +1,24 @@
+# Compiled executables
+*.exe
+*.o
+*.obj
+
+# Build directories
+build/
+cmake-build-*/
+
+# IDE and operating system files
+.vscode/
+.vs/
+.DS_Store
+Thumbs.db
+
+# Local application data and account records
+data/patients.txt
+data/doctors.txt
+data/treatments.txt
+data/users.txt
+
+# Temporary files and logs
+*.log
+*.tmp

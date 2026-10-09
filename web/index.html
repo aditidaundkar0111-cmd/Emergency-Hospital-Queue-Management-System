@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#06233d">
+  <title>Emergency Patient Queue Management System</title>
+  <link rel="stylesheet" href="styles.css?v=phase6d">
+</head>
+<body>
+  <div id="authView" class="auth-view" hidden></div>
+  <div id="appShell" class="app-shell" hidden>
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="sidebar" class="sidebar" aria-label="Main navigation">
+      <div class="brand"><div class="brand-icon" aria-hidden="true">✚</div><div><strong>Emergency Patient Queue</strong><span>Management System</span></div></div>
+      <nav id="nav" aria-label="Main menu">
+        <button data-view="dashboard" class="nav-item">⌂ <span>Dashboard</span></button>
+        <button data-view="patients" class="nav-item">♟ <span>Patients</span></button>
+        <button data-view="queue" class="nav-item">⚡ <span>Emergency Queue</span></button>
+        <button data-view="doctors" class="nav-item">⚕ <span>Doctors</span></button>
+        <button data-view="treatments" class="nav-item">▣ <span>Treatments</span></button>
+        <button data-view="statistics" class="nav-item">▥ <span>Statistics</span></button>
+        <button data-view="data" class="nav-item">▤ <span>Data Management</span></button>
+        <button data-view="about" class="nav-item">ⓘ <span>About</span></button>
+      </nav>
+      <div class="sidebar-footer">C++ OOP Course Project<br><small>Emergency Patient Queue Management System</small></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <button id="menuToggle" class="icon-btn menu-toggle" aria-label="Open navigation menu" aria-expanded="false">☰</button>
+        <div class="mobile-brand"><span class="brand-icon" aria-hidden="true">✚</span> EPQMS</div>
+        <label class="search"><span aria-hidden="true">⌕</span><input id="globalSearch" type="search" placeholder="Search patients and doctors" aria-label="Search patients and doctors"></label>
+        <div class="top-actions"><div class="profile-menu"><button id="profileToggle" class="profile" aria-haspopup="menu" aria-expanded="false"><span class="avatar" id="userInitials">U</span><span><b id="userName">User</b><small id="userRole">Hospital Staff</small></span><span aria-hidden="true">⌄</span></button><div id="profileDropdown" class="profile-dropdown" role="menu" hidden><button id="profileAction" role="menuitem">Profile</button><button id="logoutButton" role="menuitem">Log out</button></div></div></div>
+      </header>
+      <div id="content" class="content" aria-live="polite"></div>
+    </main>
+  </div>
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js?v=phase6d"></script>
+</body>
+</html>
