@@ -1,0 +1,2 @@
+# T patientId doctorId completed "diagnosis" "description"
+T 201 112 1 "Done" "Complete treatment"
