@@ -4,12 +4,19 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cerrno>
 #include <fstream>
 #include <iomanip>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <vector>
+#if defined(_WIN32)
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 namespace {
 const unsigned int kIterations = 12000;
@@ -179,6 +186,26 @@ std::string makeRandomHex(std::size_t bytes) {
     return hex(value);
 }
 
+void createDirectories(const std::string& directory) {
+    for (std::size_t position = 0; position <= directory.size(); ++position) {
+        if (position != directory.size() && directory[position] != '/' && directory[position] != '\\')
+            continue;
+        const std::string path = directory.substr(0, position);
+        if (path.empty() || path == ".") continue;
+#if defined(_WIN32)
+        if (position == 2 && directory.size() > 1 && directory[1] == ':') continue;
+#endif
+#if defined(_WIN32)
+        const int result = _mkdir(path.c_str());
+#else
+        const int result = mkdir(path.c_str(), 0777);
+#endif
+        if (result != 0 && errno != EEXIST)
+            throw std::runtime_error("Could not create account data directory '" + path + "': " +
+                                     std::system_category().message(errno));
+    }
+}
+
 bool constantTimeEqual(const std::vector<unsigned char>& left,
                        const std::vector<unsigned char>& right) {
     if (left.size() != right.size()) return false;
@@ -192,6 +219,10 @@ UserManager::UserManager(const std::string& filePath) : filePath_(filePath) { lo
 
 void UserManager::load() {
     std::ifstream input(filePath_.c_str());
+    if (!input) {
+        // A missing account file is a valid first-run state. Registration creates it.
+        return;
+    }
     std::string username, fullName, salt, passwordHash;
     while (std::getline(input, username, '|')) {
         if (!std::getline(input, fullName, '|') || !std::getline(input, salt, '|') ||
@@ -205,14 +236,30 @@ void UserManager::load() {
     }
 }
 
-void UserManager::save() const {
-    std::ofstream output(filePath_.c_str(), std::ios::trunc);
-    if (!output) throw std::runtime_error("Could not save local user accounts.");
-    for (const auto& entry : users_) {
-        const UserRecord& record = entry.second;
-        output << encode(record.user.username) << '|' << encode(record.user.fullName) << '|'
-               << record.salt << '|' << record.passwordHash << '\n';
+void UserManager::save(const UserRecord& record) const {
+    const std::string separator = "/\\";
+    const std::size_t parentEnd = filePath_.find_last_of(separator);
+    if (parentEnd != std::string::npos && parentEnd != 0)
+        createDirectories(filePath_.substr(0, parentEnd));
+    bool needsSeparator = false;
+    {
+        std::ifstream existing(filePath_.c_str(), std::ios::binary);
+        if (existing) {
+            existing.seekg(0, std::ios::end);
+            const std::streampos size = existing.tellg();
+            if (size > 0) {
+                existing.seekg(-1, std::ios::end);
+                char last = '\0';
+                existing.get(last);
+                needsSeparator = last != '\n';
+            }
+        }
     }
+    std::ofstream output(filePath_.c_str(), std::ios::app);
+    if (!output) throw std::runtime_error("Could not open local account file '" + filePath_ + "' for writing.");
+    if (needsSeparator) output << '\n';
+    output << encode(record.user.username) << '|' << encode(record.user.fullName) << '|'
+           << record.salt << '|' << record.passwordHash << '\n';
     if (!output) throw std::runtime_error("Could not write local user accounts.");
 }
 
@@ -237,7 +284,7 @@ AuthUser UserManager::registerUser(const std::string& fullName, const std::strin
     UserRecord record{AuthUser{fullName, username}, salt,
                       hex(pbkdf2(password, unhex(salt)))};
     users_[key] = record;
-    try { save(); }
+    try { save(record); }
     catch (...) { users_.erase(key); throw; }
     return record.user;
 }

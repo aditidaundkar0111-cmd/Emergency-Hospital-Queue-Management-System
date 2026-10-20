@@ -50,6 +50,31 @@ private:
 };
 
 int main() {
+    const std::string missingAuthDirectory = "data/auth_missing_directory";
+    const std::string missingAuthFile = missingAuthDirectory + "/users.txt";
+    std::remove(missingAuthFile.c_str());
+#if defined(_WIN32)
+    _rmdir(missingAuthDirectory.c_str());
+#else
+    rmdir(missingAuthDirectory.c_str());
+#endif
+    {
+        UserManager users(missingAuthFile);
+        const AuthUser created = users.registerUser("First Account", "first_missing_test",
+                                                    "First-secure-passphrase");
+        assert(created.username == "first_missing_test");
+        assert(readWholeFile(missingAuthFile).find("First-secure-passphrase") == std::string::npos);
+        UserManager reloaded(missingAuthFile);
+        assert(reloaded.login("first_missing_test", "First-secure-passphrase").user.fullName ==
+               "First Account");
+    }
+    std::remove(missingAuthFile.c_str());
+#if defined(_WIN32)
+    _rmdir(missingAuthDirectory.c_str());
+#else
+    rmdir(missingAuthDirectory.c_str());
+#endif
+
     const std::string authTestFile = "data/auth_test_users.txt";
     std::remove(authTestFile.c_str());
     {
@@ -71,8 +96,16 @@ int main() {
     }
     {
         UserManager users(authTestFile);
+        users.registerUser("Second Account", "phase6_second", "Another-secure-passphrase");
         const AuthSession session = users.login("phase6_test", "A-secure-passphrase");
         assert(session.user.fullName == "Test Account");
+        assert(users.login("phase6_second", "Another-secure-passphrase").user.fullName ==
+               "Second Account");
+        std::ifstream accountRows(authTestFile.c_str());
+        std::size_t accountCount = 0;
+        std::string accountRow;
+        while (std::getline(accountRows, accountRow)) ++accountCount;
+        assert(accountCount == 2);
         bool invalidPasswordRejected = false;
         try { users.login("phase6_test", "wrong-password"); }
         catch (const std::invalid_argument&) { invalidPasswordRejected = true; }

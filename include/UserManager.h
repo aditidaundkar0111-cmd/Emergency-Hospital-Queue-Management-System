@@ -35,5 +35,5 @@ private:
     std::map<std::string, AuthUser> sessions_;
 
     void load();
-    void save() const;
+    void save(const UserRecord& record) const;
 };
