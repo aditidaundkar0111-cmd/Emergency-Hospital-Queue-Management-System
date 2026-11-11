@@ -3,6 +3,7 @@
 const API = '';
 const TOKEN_KEY = 'epqms.session';
 const USER_KEY = 'epqms.user';
+const REMEMBERED_USERNAME_KEY = 'epqms.rememberedUsername';
 const state = { dashboard: {}, patients: [], queue: [], doctors: [], treatments: [], user: null, loading: false, treatmentTab: 'active' };
 const content = document.getElementById('content');
 const toastEl = document.getElementById('toast');
@@ -39,6 +40,16 @@ function setButtonLoading(button, loading, label) {
   }
 }
 function token() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
+function rememberedUsername() {
+  try { return localStorage.getItem(REMEMBERED_USERNAME_KEY) || ''; }
+  catch (_) { return ''; }
+}
+function storeRememberedUsername(username) {
+  try {
+    if (username) localStorage.setItem(REMEMBERED_USERNAME_KEY, username);
+    else localStorage.removeItem(REMEMBERED_USERNAME_KEY);
+  } catch (_) { /* Remember Me is optional when browser storage is unavailable. */ }
+}
 async function api(path, options = {}) {
   let response;
   try {
@@ -61,26 +72,105 @@ function validIdentity(value) {
   const v = value.trim();
   return /^[A-Za-z0-9_.-]{3,40}$/.test(v) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
+function authBrandingMarkup() {
+  return `<aside class="auth-brand-panel" aria-label="Hospital queue system information">
+    <div class="auth-brand-content">
+      <div class="auth-brand"><span class="auth-brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z"/></svg></span><div><strong>Emergency Patient Queue</strong><span>Management System</span></div></div>
+      <div class="auth-brand-copy"><h2>Hospital Queue<br>Management</h2><p>Manage patients, prioritize emergency cases, track treatments and optimize hospital operations.</p></div>
+      <ul class="auth-features" aria-label="System features">
+        <li><span aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19zM16 5.5a3 3 0 0 1 0 5.8M17 13h.5a4 4 0 0 1 4 4v2H17"/></svg></span>Patient Management</li>
+        <li><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m13 2-9 12h7l-1 8 10-13h-7z"/></svg></span>Emergency Queue</li>
+        <li><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5a3 3 0 1 0 0 6h2v2a3 3 0 1 0 6 0v-2h1a3 3 0 1 0 0-6h-1V4a3 3 0 1 0-6 0v1z"/><path d="M12 8v5m-2.5-2.5h5"/></svg></span>Doctor Management</li>
+        <li><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h17M7 15l4-4 3 2 6-7"/><path d="M16 6h4v4"/></svg></span>Real-time Statistics</li>
+      </ul>
+    </div>
+    <svg class="auth-hospital-art" viewBox="0 0 520 230" role="img" aria-labelledby="hospitalArtTitle hospitalArtDesc">
+      <title id="hospitalArtTitle">Hospital and ambulance</title><desc id="hospitalArtDesc">A small hospital with a medical cross, trees and an ambulance.</desc>
+      <ellipse cx="266" cy="210" rx="244" ry="13" fill="#041f37" opacity=".35"/>
+      <path d="M0 179c68-27 117-18 163 0s99 19 152-7 122-31 205-1v59H0z" fill="#12507a" opacity=".7"/>
+      <g stroke="#b7d9f0" stroke-width="2">
+        <path d="M135 208V116l65-39 65 39v92z" fill="#f7fbff"/><path d="M184 208V91h47v117" fill="#fff"/>
+        <path d="M198 55h40v37h-40z" fill="#fff"/><path d="M214 61h9v11h11v9h-11v11h-9V81h-11v-9h11z" fill="#f23b4b" stroke="none"/>
+        <path d="M145 128h18v19h-18zm35 0h18v19h-18zm35 0h12v19h-12zm-70 35h18v19h-18zm35 0h18v19h-18zm35 0h12v19h-12z" fill="#bce0fa"/>
+        <path d="M203 174h26v34h-26z" fill="#7ab5df"/><path d="M215 174v34" fill="none"/>
+        <path d="M264 132h44v76h-44z" fill="#e9f5ff"/><path d="M273 142h12v15h-12zm20 0h8v15h-8zm-20 26h12v15h-12zm20 0h8v15h-8z" fill="#bce0fa"/>
+      </g>
+      <path d="M123 208h195" stroke="#d8edf9" stroke-width="4" stroke-linecap="round"/>
+      <g transform="translate(325 153)">
+        <path d="M0 23h110v36H0z" fill="#fff" stroke="#b7d9f0" stroke-width="2"/><path d="M74 4h22l14 19H74z" fill="#e9f5ff" stroke="#b7d9f0" stroke-width="2"/><path d="M79 8h15l9 12H79z" fill="#86c1e9"/><path d="M0 23h110v9H0z" fill="#f23b4b"/><path d="M39 36h16v4H39z" fill="#f23b4b"/><circle cx="25" cy="60" r="9" fill="#173e5d"/><circle cx="87" cy="60" r="9" fill="#173e5d"/><circle cx="25" cy="60" r="4" fill="#e7f3fb"/><circle cx="87" cy="60" r="4" fill="#e7f3fb"/><path d="M45 34h6v5h5v5h-5v5h-6v-5h-5v-5h5z" fill="#fff"/>
+      </g>
+      <g fill="#74bd91"><circle cx="91" cy="190" r="13"/><circle cx="417" cy="195" r="12"/><circle cx="445" cy="189" r="16"/></g><path d="M91 198v12m326-5v5m28-8v8" stroke="#d7ecfa" stroke-width="3"/>
+    </svg>
+  </aside>`;
+}
 function authPage(mode = 'login') {
   appShell.hidden = true;
   authView.hidden = false;
   const isRegister = mode === 'register';
-  authView.innerHTML = `<section class="auth-card" aria-labelledby="authTitle"><div class="auth-brand"><span class="brand-icon" aria-hidden="true">✚</span><div><strong>Emergency Patient Queue</strong><span>Management System</span></div></div><div class="auth-heading"><p class="eyebrow">SECURE STAFF ACCESS</p><h1 id="authTitle">${isRegister ? 'Create your account' : 'Welcome back'}</h1><p>${isRegister ? 'Register to manage hospital operations.' : 'Sign in to continue to your hospital dashboard.'}</p></div><form id="authForm" novalidate>${isRegister ? `<div class="field"><label for="authFullName">Full name</label><input id="authFullName" name="fullName" autocomplete="name" maxlength="100" required><small class="field-error" data-error="fullName"></small></div>` : ''}<div class="field"><label for="authUsername">Username or email</label><input id="authUsername" name="username" autocomplete="${isRegister ? 'username' : 'username'}" maxlength="254" required><small class="field-error" data-error="username"></small></div><div class="field"><label for="authPassword">Password</label><input id="authPassword" name="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" minlength="8" maxlength="128" required><small class="field-error" data-error="password"></small></div>${isRegister ? `<div class="field"><label for="authConfirm">Confirm password</label><input id="authConfirm" name="confirmPassword" type="password" autocomplete="new-password" required><small class="field-error" data-error="confirmPassword"></small></div>` : ''}<div class="auth-error" id="authError" role="alert"></div><button class="btn auth-submit" type="submit" id="authSubmit">${isRegister ? 'Create Account' : 'Sign In'}</button></form><p class="auth-switch">${isRegister ? 'Already have an account?' : 'Don’t have an account?'} <button type="button" id="authSwitch">${isRegister ? 'Sign in' : 'Register'}</button></p><p class="auth-footnote">Local account · Passwords are stored as salted hashes</p></section>`;
+  authView.classList.toggle('auth-register', isRegister);
+  document.body.classList.add('auth-active');
+  document.body.classList.toggle('auth-register-active', isRegister);
+  const inputLabel = isRegister ? 'Username or email' : 'Email';
+  const submitLabel = isRegister ? 'Create Account' : 'Sign In';
+  authView.innerHTML = `<div class="auth-layout">${authBrandingMarkup()}<section class="auth-form-panel" aria-label="${isRegister ? 'Account registration' : 'Staff sign in'}"><div class="auth-card" aria-labelledby="authTitle">
+    <div class="auth-form-heading"><span class="auth-lock-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/></svg></span><h1 id="authTitle">${isRegister ? 'Create your account' : 'Welcome Back'}</h1><p>${isRegister ? 'Register to manage hospital operations' : 'Sign in to your hospital dashboard'}</p></div>
+    <form id="authForm" novalidate>${isRegister ? `<div class="field"><label for="authFullName">Full name</label><input id="authFullName" name="fullName" autocomplete="name" maxlength="100" required><small class="field-error" data-error="fullName"></small></div>` : ''}
+      <div class="field"><label for="authUsername"><svg class="auth-label-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg>${inputLabel}</label><input id="authUsername" name="username" type="text" autocomplete="username" maxlength="254" placeholder="${isRegister ? 'Choose a username or enter email' : 'Enter your email or username'}" required><small class="field-error" data-error="username"></small></div>
+      <div class="field"><label for="authPassword"><svg class="auth-label-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Password</label>${isRegister ? `<input id="authPassword" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>` : `<div class="auth-password-wrap"><input id="authPassword" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required><button type="button" class="auth-password-toggle" id="togglePassword" aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>`}<small class="field-error" data-error="password"></small></div>
+      ${isRegister ? `<div class="field"><label for="authConfirm">Confirm password</label><input id="authConfirm" name="confirmPassword" type="password" autocomplete="new-password" required><small class="field-error" data-error="confirmPassword"></small></div>` : `<div class="auth-options"><label class="auth-remember" for="rememberMe"><input type="checkbox" id="rememberMe"><span>Remember me</span></label><button type="button" class="auth-link" id="forgotPassword">Forgot password?</button></div>`}
+      <div class="auth-error" id="authError" role="alert" aria-live="polite"></div><button class="btn auth-submit" type="submit" id="authSubmit">${isRegister ? 'Create Account' : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5m-4-4 4-4-4-4m4 4H3"/></svg>Sign In'}</button>
+    </form><div class="auth-bottom"><p>${isRegister ? 'Already have an account?' : 'Don’t have an account?'} <button type="button" id="authSwitch">${isRegister ? 'Sign in' : 'Register'}</button></p><small class="auth-footnote">Local account · Passwords are stored as salted hashes</small></div>
+  </div></section></div>`;
+  const usernameInput = document.getElementById('authUsername');
+  const passwordInput = document.getElementById('authPassword');
+  if (!isRegister) {
+    const savedUsername = rememberedUsername();
+    usernameInput.value = savedUsername;
+    document.getElementById('rememberMe').checked = Boolean(savedUsername);
+    document.getElementById('togglePassword').addEventListener('click', event => {
+      const button = event.currentTarget;
+      const visible = passwordInput.type === 'password';
+      passwordInput.type = visible ? 'text' : 'password';
+      button.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+      button.setAttribute('aria-pressed', String(visible));
+      button.innerHTML = visible
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 3 18 18M10.6 10.7a2 2 0 0 0 2.7 2.7"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a16 16 0 0 1-3.1 3.8M6.2 6.2C3.5 8 2 12 2 12s3.6 7 10 7a10 10 0 0 0 4-.8"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    });
+    const rememberMe = document.getElementById('rememberMe');
+    rememberMe.addEventListener('change', () => storeRememberedUsername(rememberMe.checked ? usernameInput.value.trim() : ''));
+    usernameInput.addEventListener('input', () => {
+      if (rememberMe.checked) storeRememberedUsername(usernameInput.value.trim());
+    });
+    document.getElementById('forgotPassword').addEventListener('click', () => {
+      showModal('Password Recovery', '<p class="modal-intro">Password recovery is currently managed by your system administrator. Please contact your administrator to reset your account password.</p><div class="modal-actions"><button type="button" class="btn" id="closeRecoveryDialog">Close</button></div>', null, 'auth-recovery-modal');
+      modalRoot.querySelector('#closeRecoveryDialog').onclick = closeModal;
+    });
+  }
   document.getElementById('authSwitch').onclick = () => authPage(isRegister ? 'login' : 'register');
   const form = document.getElementById('authForm');
+  let submitting = false;
   form.onsubmit = async event => {
     event.preventDefault();
+    if (submitting) return;
     const fullName = document.getElementById('authFullName')?.value.trim() || '';
     const username = document.getElementById('authUsername').value.trim();
     const password = document.getElementById('authPassword').value;
     const confirm = document.getElementById('authConfirm')?.value;
     const errors = {};
+    form.querySelectorAll('.field-error').forEach(target => {
+      target.textContent = '';
+      target.closest('.field')?.querySelector('input')?.removeAttribute('aria-invalid');
+    });
     if (isRegister && !fullName) errors.fullName = 'Enter your full name.';
-    if (!validIdentity(username)) errors.username = 'Enter a valid username or email address.';
-    if (password.length < 8 || password.length > 128) errors.password = 'Password must be 8–128 characters.';
+    if (!username) errors.username = 'Enter your username or email.';
+    else if (!validIdentity(username)) errors.username = 'Enter a valid username or email address.';
+    if (!password) errors.password = 'Enter your password.';
+    else if (password.length < 8 || password.length > 128) errors.password = 'Password must be 8–128 characters.';
     if (isRegister && password !== confirm) errors.confirmPassword = 'Passwords do not match.';
-    Object.keys(errors).forEach(key => { const target = form.querySelector(`[data-error="${key}"]`); target.textContent = errors[key]; target.previousElementSibling?.setAttribute('aria-invalid', 'true'); });
+    Object.keys(errors).forEach(key => { const target = form.querySelector(`[data-error="${key}"]`); target.textContent = errors[key]; target.closest('.field')?.querySelector('input')?.setAttribute('aria-invalid', 'true'); });
     if (Object.keys(errors).length) return;
+    submitting = true;
     const button = document.getElementById('authSubmit');
     setButtonLoading(button, true, isRegister ? 'Creating account…' : 'Signing in…');
     document.getElementById('authError').textContent = '';
@@ -92,6 +182,7 @@ function authPage(mode = 'login') {
         document.getElementById('authUsername').value = username;
       } else {
         const result = await post('/api/auth/login', { username, password });
+        storeRememberedUsername(document.getElementById('rememberMe').checked ? username : '');
         sessionStorage.setItem(TOKEN_KEY, result.token);
         sessionStorage.setItem(USER_KEY, JSON.stringify(result.user));
         state.user = result.user;
@@ -100,10 +191,13 @@ function authPage(mode = 'login') {
         await enterApp();
       }
     } catch (error) {
-      if (error.message.includes('Invalid username/email')) document.getElementById('authError').textContent = 'Invalid username/email or password.';
+      if (!isRegister && error.message.includes('Invalid username/email')) document.getElementById('authError').textContent = 'Invalid username/email or password.';
       else if (isRegister && error.message.toLowerCase().includes('already registered')) document.querySelector('[data-error="username"]').textContent = 'That username or email is already registered.';
-      else document.getElementById('authError').textContent = error.message;
-    } finally { if (document.getElementById('authSubmit') === button) setButtonLoading(button, false); }
+      else document.getElementById('authError').textContent = isRegister ? error.message : 'Unable to sign in right now. Please try again.';
+    } finally {
+      submitting = false;
+      if (document.getElementById('authSubmit') === button) setButtonLoading(button, false);
+    }
   };
   document.getElementById(isRegister ? 'authFullName' : 'authUsername').focus();
 }
@@ -146,6 +240,7 @@ function updateUserUI() {
 }
 async function enterApp() {
   authView.hidden = true; appShell.hidden = false;
+  document.body.classList.remove('auth-active', 'auth-register-active');
   try {
     state.user = await api('/api/auth/me');
     sessionStorage.setItem(USER_KEY, JSON.stringify(state.user));
@@ -256,15 +351,15 @@ async function action(button, label, callback) {
   try { await callback(); } catch (error) { toast(error.message, 'error'); }
   finally { if (button.isConnected) setButtonLoading(button, false); }
 }
-function showModal(title, body, onSubmit) {
+function showModal(title, body, onSubmit, className = '') {
   closeModal();
   modalReturnFocus = document.activeElement;
-  modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-backdrop><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><header class="modal-header"><h2 id="modalTitle">${title}</h2><button type="button" class="icon-btn modal-close" aria-label="Close dialog">×</button></header><div class="modal-body">${body}</div></section></div>`;
+  modalRoot.innerHTML = `<div class="modal-backdrop" data-modal-backdrop><section class="modal ${className}" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1"><header class="modal-header"><h2 id="modalTitle">${title}</h2><button type="button" class="icon-btn modal-close" aria-label="Close dialog">×</button></header><div class="modal-body">${body}</div></section></div>`;
   activeModal = modalRoot.querySelector('.modal');
   modalRoot.querySelector('.modal-close').onclick = closeModal;
   modalRoot.querySelector('[data-modal-backdrop]').onclick = e => { if (e.target === e.currentTarget) closeModal(); };
   activeModal.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeModal();
+    if (e.key === 'Escape') { e.stopPropagation(); closeModal(); }
     if (e.key === 'Tab') {
       const items = [...activeModal.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')];
       if (!items.length) return;
