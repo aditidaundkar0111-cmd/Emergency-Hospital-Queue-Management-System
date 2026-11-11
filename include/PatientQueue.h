@@ -24,4 +24,5 @@ public:
 private:
     std::priority_queue<Patient*, std::vector<Patient*>, PatientPriorityComparator> waitingQueue_;
     std::vector<Patient*> registeredPatients_;
+    std::vector<Patient*> dequeuedPatients_;
 };

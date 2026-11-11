@@ -6,12 +6,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <atomic>
+#include <vector>
 #if defined(_WIN32)
 #include <direct.h>
 #else
@@ -87,8 +89,7 @@ int main() {
     assert(changeDirectory(originalDirectory + "/" + isolatedDirectory));
 
     httplib::Client transport("127.0.0.1", 18081);
-    transport.set_connection_timeout(1, 0);
-    transport.set_read_timeout(2, 0);
+    transport.set_timeout_sec(2);
 
     auto protectedDashboard = transport.Get("/api/dashboard");
     assert(protectedDashboard && protectedDashboard->status == 401);
@@ -96,6 +97,8 @@ int main() {
         R"({"fullName":"API Test User","username":"api_test","password":"Api-test-password"})",
         "application/json");
     assert(registered && registered->status == 201);
+    const Json registrationBody = Json::parse(registered->body);
+    assert(registrationBody.at("user").size() == 2);
     auto duplicateAccount = transport.Post("/api/auth/register",
         R"({"fullName":"Duplicate","username":"API_TEST","password":"Api-test-password"})",
         "application/json");
@@ -106,7 +109,9 @@ int main() {
     auto login = transport.Post("/api/auth/login",
         R"({"username":"api_test","password":"Api-test-password"})", "application/json");
     assert(login && login->status == 200);
-    const std::string token = Json::parse(login->body).at("token").get<std::string>();
+    const Json loginBody = Json::parse(login->body);
+    assert(loginBody.at("user").size() == 2);
+    const std::string token = loginBody.at("token").get<std::string>();
     AuthorizedClient client(transport);
     client.setToken(token);
     auto currentUser = client.Get("/api/auth/me");
@@ -119,12 +124,21 @@ int main() {
     auto emptyPatients = client.Get("/api/patients");
     assert(emptyPatients && emptyPatients->status == 200);
     assert(Json::parse(emptyPatients->body).is_array());
-    assert(emptyPatients->get_header_value("Access-Control-Allow-Origin") == "*");
+    assert(emptyPatients->get_header_value("Access-Control-Allow-Origin").empty());
+    httplib::Headers localOrigin;
+    localOrigin.insert(std::make_pair("Origin", "http://localhost:8080"));
+    auto localCors = transport.Get("/api/patients", localOrigin);
+    assert(localCors && localCors->get_header_value("Access-Control-Allow-Origin") == "http://localhost:8080");
+    httplib::Headers foreignOrigin;
+    foreignOrigin.insert(std::make_pair("Origin", "http://example.invalid"));
+    auto foreignCors = transport.Get("/api/patients", foreignOrigin);
+    assert(foreignCors && foreignCors->get_header_value("Access-Control-Allow-Origin").empty());
 
     auto regular = client.Post("/api/patients",
         R"({"id":101,"name":"Regular One","age":30,"condition":"Checkup","severity":1,"type":"regular"})",
         "application/json");
     assert(regular && regular->status == 201);
+    assert(Json::parse(regular->body).at("waitingTime") == 0);
     auto duplicatePatient = client.Post("/api/patients",
         R"({"id":101,"name":"Duplicate","age":30,"condition":"Checkup","severity":1,"type":"regular"})",
         "application/json");
@@ -136,6 +150,8 @@ int main() {
     assert(emergency && emergency->status == 201);
     auto patientListResponse = client.Get("/api/patients");
     assert(patientListResponse && Json::parse(patientListResponse->body).size() == 2);
+    auto populatedDashboard = client.Get("/api/dashboard");
+    assert(populatedDashboard && Json::parse(populatedDashboard->body).at("averageWaitingTime") == 0.0);
     auto missingPatient = client.Get("/api/patients/999");
     assert(missingPatient && missingPatient->status == 404);
 
@@ -143,6 +159,7 @@ int main() {
     assert(queueResponse && queueResponse->status == 200);
     Json queue = Json::parse(queueResponse->body);
     assert(queue.size() == 2 && queue[0].at("id") == 102);
+    assert(queue[0].at("waitingTime") == 0);
     auto noDoctors = client.Get("/api/doctors");
     assert(noDoctors && Json::parse(noDoctors->body).empty());
     auto doctor = client.Post("/api/doctors",
@@ -155,6 +172,8 @@ int main() {
     assert(duplicateDoctor && duplicateDoctor->status == 409);
     auto doctors = client.Get("/api/doctors");
     assert(doctors && Json::parse(doctors->body).size() == 1);
+    auto dashboardWithDoctor = client.Get("/api/dashboard");
+    assert(dashboardWithDoctor && Json::parse(dashboardWithDoctor->body).at("totalDoctors") == 1);
 
     auto invalidDoctor = client.Post("/api/patients/102/assign-doctor",
         R"({"doctorId":999})", "application/json");
@@ -167,15 +186,37 @@ int main() {
     auto assigned = client.Post("/api/patients/102/assign-doctor",
         R"({"doctorId":1})", "application/json");
     assert(assigned && assigned->status == 200);
+    assert(Json::parse(assigned->body).at("status") == "ASSIGNED");
+    auto dashboardAssigned = client.Get("/api/dashboard");
+    Json assignedStats = Json::parse(dashboardAssigned->body);
+    assert(assignedStats.at("totalPatients") == 2 && assignedStats.at("waitingPatients") == 1);
+    assert(assignedStats.at("assignedPatients") == 1 && assignedStats.at("underTreatment") == 0);
+    auto assignedPatients = client.Get("/api/patients");
+    bool assignedInPatientList = false;
+    for (const Json& patient : Json::parse(assignedPatients->body))
+        if (patient.at("id") == 102 && patient.at("status") == "ASSIGNED") assignedInPatientList = true;
+    assert(assignedInPatientList);
+    auto queueAfterAssignment = client.Get("/api/queue");
+    Json waitingAfterAssignment = Json::parse(queueAfterAssignment->body);
+    assert(waitingAfterAssignment.size() == 1 && waitingAfterAssignment[0].at("id") == 101);
+    assert(Json::parse(client.Get("/api/doctors")->body)[0].at("availability") == "busy");
     auto busyDoctor = client.Post("/api/patients/101/assign-doctor",
         R"({"doctorId":1})", "application/json");
     assert(busyDoctor && busyDoctor->status == 409);
     auto started = client.Post("/api/patients/102/start-treatment", "{}", "application/json");
     assert(started && started->status == 200);
+    auto afterStart = client.Get("/api/patients/102");
+    assert(afterStart && Json::parse(afterStart->body).at("status") == "UNDER_TREATMENT");
+    Json treatmentStats = Json::parse(client.Get("/api/dashboard")->body);
+    assert(treatmentStats.at("assignedPatients") == 0 && treatmentStats.at("underTreatment") == 1);
     auto completed = client.Post("/api/patients/102/complete-treatment",
         R"({"doctorId":1,"diagnosis":"API diagnosis","description":"API treatment"})",
         "application/json");
     assert(completed && Json::parse(completed->body).at("status") == "COMPLETED");
+    Json completedStats = Json::parse(client.Get("/api/dashboard")->body);
+    assert(completedStats.at("assignedPatients") == 0 && completedStats.at("underTreatment") == 0);
+    assert(completedStats.at("completedPatients") == 1);
+    assert(Json::parse(client.Get("/api/doctors")->body)[0].at("availability") == "available");
     auto treatments = client.Get("/api/treatments");
     assert(treatments && Json::parse(treatments->body).size() == 1);
     auto saved = client.Post("/api/data/save", "{}", "application/json");
@@ -185,16 +226,40 @@ int main() {
         R"({"id":103,"name":"Transient","age":20,"condition":"Temporary","severity":1,"type":"regular"})",
         "application/json");
     assert(transientPatient && transientPatient->status == 201);
+    {
+        std::ifstream savedPatients("data/patients.txt");
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(savedPatients, line)) {
+            if (line.compare(0, 6, "P 101 ") == 0) {
+                const std::size_t timestampSeparator = line.find_last_of(" \t");
+                assert(timestampSeparator != std::string::npos);
+                const long long simulatedArrival = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() - 180;
+                line = line.substr(0, timestampSeparator + 1) + std::to_string(simulatedArrival);
+            }
+            lines.push_back(line);
+        }
+        assert(!lines.empty());
+        std::ofstream savedPatientsOut("data/patients.txt", std::ios::trunc);
+        for (const std::string& savedLine : lines) savedPatientsOut << savedLine << '\n';
+        assert(savedPatientsOut.good());
+    }
     auto loaded = client.Post("/api/data/load", "{}", "application/json");
     assert(loaded && loaded->status == 200);
     assert(Json::parse(loaded->body).at("dashboard").at("totalPatients") == 2);
     auto afterLoad = client.Get("/api/patients");
     assert(afterLoad && Json::parse(afterLoad->body).size() == 2);
+    auto agedPatient = client.Get("/api/patients/101");
+    assert(agedPatient && Json::parse(agedPatient->body).at("waitingTime") >= 3);
     auto emptyQueue = client.Get("/api/queue");
     assert(emptyQueue && Json::parse(emptyQueue->body).size() == 1);
     auto queueEmptyCall = client.Post("/api/queue/call-next", "{}", "application/json");
     assert(queueEmptyCall && queueEmptyCall->status == 200);
     assert(Json::parse(queueEmptyCall->body).at("id") == 101);
+    const int frozenApiWait = Json::parse(queueEmptyCall->body).at("waitingTime").get<int>();
+    assert(frozenApiWait >= 3 && Json::parse(queueEmptyCall->body).at("status") == "CALLED");
+    assert(Json::parse(client.Get("/api/patients/101")->body).at("waitingTime") == frozenApiWait);
 
     auto loggedOut = client.Post("/api/auth/logout", "{}", "application/json");
     assert(loggedOut && loggedOut->status == 200);

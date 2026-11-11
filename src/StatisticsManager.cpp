@@ -10,6 +10,7 @@ HospitalStatistics StatisticsManager::calculate(
         switch (patient->getStatus()) {
             case PatientStatus::WAITING: ++stats.waitingPatients; break;
             case PatientStatus::CALLED: ++stats.calledPatients; break;
+            case PatientStatus::ASSIGNED: ++stats.assignedPatients; break;
             case PatientStatus::UNDER_TREATMENT: ++stats.patientsUnderTreatment; break;
             case PatientStatus::COMPLETED: ++stats.completedPatients; break;
         }

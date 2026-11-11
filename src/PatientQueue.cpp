@@ -1,4 +1,5 @@
 #include "PatientQueue.h"
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -36,20 +37,29 @@ void PatientQueue::trackPatient(Patient* patient) {
 
 void PatientQueue::rebuildWaitingQueue() {
     decltype(waitingQueue_) rebuilt;
-    for (Patient* patient : registeredPatients_)
-        if (patient->getStatus() == PatientStatus::WAITING) rebuilt.push(patient);
+    for (Patient* patient : registeredPatients_) {
+        const auto removed = std::find(dequeuedPatients_.begin(), dequeuedPatients_.end(), patient);
+        if (patient->getStatus() != PatientStatus::WAITING) {
+            if (removed != dequeuedPatients_.end()) dequeuedPatients_.erase(removed);
+            continue;
+        }
+        if (removed == dequeuedPatients_.end()) rebuilt.push(patient);
+    }
     waitingQueue_ = std::move(rebuilt);
 }
 
 void PatientQueue::clear() {
     waitingQueue_ = decltype(waitingQueue_){};
     registeredPatients_.clear();
+    dequeuedPatients_.clear();
 }
 
 Patient* PatientQueue::getNextPatient() {
+    rebuildWaitingQueue();
     if (waitingQueue_.empty()) return nullptr;
     Patient* patient = waitingQueue_.top();
     waitingQueue_.pop();
+    dequeuedPatients_.push_back(patient);
     return patient;
 }
 
@@ -60,23 +70,23 @@ Patient* PatientQueue::findPatient(int patientId) const {
 }
 
 void PatientQueue::displayQueue() const {
-    auto copy = waitingQueue_;
-    while (!copy.empty()) {
-        copy.top()->display();
-        copy.pop();
-    }
+    for (const Patient* patient : getWaitingPatients()) patient->display();
 }
 
 bool PatientQueue::isEmpty() const { return waitingQueue_.empty(); }
 std::size_t PatientQueue::size() const { return waitingQueue_.size(); }
 
 std::vector<Patient*> PatientQueue::getWaitingPatients() const {
-    auto copy = waitingQueue_;
+    decltype(waitingQueue_) ordered;
+    for (Patient* patient : registeredPatients_)
+        if (patient != nullptr && patient->getStatus() == PatientStatus::WAITING &&
+            std::find(dequeuedPatients_.begin(), dequeuedPatients_.end(), patient) == dequeuedPatients_.end())
+            ordered.push(patient);
     std::vector<Patient*> patients;
-    patients.reserve(copy.size());
-    while (!copy.empty()) {
-        patients.push_back(copy.top());
-        copy.pop();
+    patients.reserve(ordered.size());
+    while (!ordered.empty()) {
+        patients.push_back(ordered.top());
+        ordered.pop();
     }
     return patients;
 }

@@ -7,8 +7,10 @@
 #include "RegularPatient.h"
 #include "UserManager.h"
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -121,6 +123,108 @@ int main() {
     assert(emergency.calculatePriority() == 120.0);
     assert(emergency.calculatePriority() > regular.calculatePriority());
 
+    using SystemClock = std::chrono::system_clock;
+    const SystemClock::time_point simulatedRegistration = SystemClock::now();
+    Patient clockedPatient(106, "Clocked", 30, "Test", 1, 0, simulatedRegistration);
+    assert(clockedPatient.getWaitingTimeAt(simulatedRegistration) == 0);
+    Hospital registrationClock;
+    Patient& newlyRegistered = registrationClock.registerRegularPatient(1050, "New arrival", 30,
+        "Check", 1);
+    assert(newlyRegistered.getWaitingTime() == 0);
+    assert(newlyRegistered.getWaitingTimeAt(simulatedRegistration + std::chrono::minutes(2)) >= 2);
+    assert(clockedPatient.getWaitingTimeAt(simulatedRegistration + std::chrono::minutes(5)) == 5);
+    assert(clockedPatient.getWaitingTimeAt(simulatedRegistration + std::chrono::minutes(15)) == 15);
+
+    Hospital agedQueue;
+    agedQueue.registerPatient(std::make_unique<Patient>(107, "Long wait", 25, "A", 1, 0,
+        simulatedRegistration - std::chrono::minutes(45)));
+    agedQueue.registerRegularPatient(108, "Higher severity", 25, "B", 2, 0);
+    const std::vector<Patient*> agedOrder = agedQueue.getWaitingPatients();
+    assert(agedOrder.size() == 2 && agedOrder.front()->getId() == 107);
+
+    Hospital freezeQueue;
+    Patient& waitingToCall = freezeQueue.registerPatient(std::make_unique<Patient>(109,
+        "Freeze wait", 25, "A", 1, 0, simulatedRegistration - std::chrono::minutes(12)));
+    freezeQueue.callNextPatient(simulatedRegistration);
+    assert(waitingToCall.getWaitingTimeAt(simulatedRegistration + std::chrono::hours(1)) == 12);
+
+    Hospital assignedClock;
+    const SystemClock::time_point twoMinutesAgo = simulatedRegistration - std::chrono::minutes(2);
+    Patient& clockLifecyclePatient = assignedClock.registerPatient(std::make_unique<Patient>(110,
+        "Lifecycle clock", 25, "A", 2, 0, twoMinutesAgo));
+    assignedClock.addDoctor(Doctor(111, "Dr Clock", "General Physician"));
+    assert(clockLifecyclePatient.getWaitingTimeAt(simulatedRegistration) >= 2);
+    assert(assignedClock.callNextPatient(simulatedRegistration) == &clockLifecyclePatient);
+    const int frozenAtCall = clockLifecyclePatient.getWaitingTime();
+    assignedClock.assignDoctor(110, 111);
+    assert(clockLifecyclePatient.getStatus() == PatientStatus::ASSIGNED);
+    assert(!assignedClock.findDoctor(111)->isAvailable());
+    assert(clockLifecyclePatient.getWaitingTimeAt(simulatedRegistration + std::chrono::hours(1)) == frozenAtCall);
+    HospitalStatistics assignedStats = assignedClock.getStatistics();
+    assert(assignedStats.totalPatients == 1 && assignedStats.waitingPatients == 0 &&
+           assignedStats.assignedPatients == 1 && assignedStats.patientsUnderTreatment == 0 &&
+           assignedStats.completedPatients == 0);
+
+    const std::string assignedClockData = "data/test_assigned_clock";
+    assignedClock.saveData(assignedClockData);
+    Hospital assignedClockReloaded;
+    assignedClockReloaded.loadData(assignedClockData);
+    assert(assignedClockReloaded.findPatient(110)->getStatus() == PatientStatus::ASSIGNED);
+    assert(assignedClockReloaded.findPatient(110)->getWaitingTime() == frozenAtCall);
+    assert(!assignedClockReloaded.findDoctor(111)->isAvailable());
+    assignedClockReloaded.startTreatment(110);
+    assignedStats = assignedClockReloaded.getStatistics();
+    assert(assignedStats.assignedPatients == 0 && assignedStats.patientsUnderTreatment == 1);
+    assignedClockReloaded.completeTreatment(110, 111, "Stable", "Observation");
+    assignedStats = assignedClockReloaded.getStatistics();
+    assert(assignedStats.completedPatients == 1 && assignedStats.assignedPatients == 0 &&
+           assignedStats.patientsUnderTreatment == 0);
+    assert(assignedClockReloaded.findDoctor(111)->isAvailable());
+    assert(assignedClockReloaded.findPatient(110)->getWaitingTimeAt(
+        simulatedRegistration + std::chrono::hours(1)) == frozenAtCall);
+
+    const std::string legacyWaitingData = "data/test_legacy_waiting";
+    FileManager(legacyWaitingData).saveAll(Hospital());
+    {
+        std::ofstream legacyPatients(legacyWaitingData + "/patients.txt");
+        legacyPatients << "P 112 REGULAR 30 2 0 0 WAITING \"Legacy patient\" \"Check\"\n";
+    }
+    Hospital legacyWaiting;
+    const SystemClock::time_point beforeLegacyLoad = SystemClock::now();
+    legacyWaiting.loadData(legacyWaitingData);
+    const SystemClock::time_point afterLegacyLoad = SystemClock::now();
+    assert(legacyWaiting.findPatient(112) != nullptr);
+    assert(legacyWaiting.findPatient(112)->getWaitingTimeAt(beforeLegacyLoad) == 0);
+    std::string migratedPatientRecord;
+    {
+        std::ifstream migratedPatients(legacyWaitingData + "/patients.txt");
+        std::getline(migratedPatients, migratedPatientRecord); // Header
+        std::getline(migratedPatients, migratedPatientRecord);
+    }
+    std::istringstream migratedRecord(migratedPatientRecord);
+    char patientTag = '\0'; int legacyId = 0, legacyAge = 0, legacySeverity = 0;
+    int legacyWait = 0, legacyCritical = 0; std::string legacyType, legacyStatus, legacyName, legacyCondition;
+    long long migratedEpoch = -1;
+    assert(migratedRecord >> patientTag >> legacyId >> legacyType >> legacyAge >> legacySeverity >>
+           legacyWait >> legacyCritical >> legacyStatus >> std::quoted(legacyName) >>
+           std::quoted(legacyCondition) >> migratedEpoch);
+    const long long beforeEpoch = std::chrono::duration_cast<std::chrono::seconds>(
+        beforeLegacyLoad.time_since_epoch()).count();
+    const long long afterEpoch = std::chrono::duration_cast<std::chrono::seconds>(
+        afterLegacyLoad.time_since_epoch()).count();
+    assert(migratedEpoch >= beforeEpoch && migratedEpoch <= afterEpoch);
+    Hospital legacyReloaded;
+    legacyReloaded.loadData(legacyWaitingData);
+    std::string reloadedPatientRecord;
+    {
+        std::ifstream migratedPatients(legacyWaitingData + "/patients.txt");
+        std::getline(migratedPatients, reloadedPatientRecord);
+        std::getline(migratedPatients, reloadedPatientRecord);
+    }
+    assert(reloadedPatientRecord == migratedPatientRecord);
+    assert(legacyReloaded.findPatient(112)->getWaitingTimeAt(
+        SystemClock::time_point(std::chrono::seconds(migratedEpoch)) + std::chrono::minutes(2)) == 2);
+
     bool rejectedInvalidAge = false;
     try {
         RegularPatient invalid(103, "Sam", 150, "Injury", 1);
@@ -204,16 +308,20 @@ int main() {
     assert(missingDoctorRejected);
 
     hospital.assignDoctor(104, 201);
-    assert(h104.getStatus() == PatientStatus::UNDER_TREATMENT);
+    assert(h104.getStatus() == PatientStatus::ASSIGNED);
     assert(!hospital.findDoctor(201)->isAvailable());
+    bool assignedCompletionRejected = false;
+    try { hospital.completeTreatment(104, 201, "N/A", "N/A"); }
+    catch (const std::logic_error&) { assignedCompletionRejected = true; }
+    assert(assignedCompletionRejected && h104.getStatus() == PatientStatus::ASSIGNED);
+    hospital.startTreatment(104);
+    assert(h104.getStatus() == PatientStatus::UNDER_TREATMENT);
     Patient* secondCalled = hospital.callNextPatient();
     assert(secondCalled == &h102 && h102.getStatus() == PatientStatus::CALLED);
     bool busyDoctorRejectedByHospital = false;
     try { hospital.assignDoctor(102, 201); }
     catch (const std::logic_error&) { busyDoctorRejectedByHospital = true; }
     assert(busyDoctorRejectedByHospital);
-    hospital.startTreatment(104);
-
     bool waitingCompletionRejected = false;
     try { hospital.completeTreatment(101, 202, "N/A", "N/A"); }
     catch (const std::logic_error&) { waitingCompletionRejected = true; }
@@ -222,6 +330,7 @@ int main() {
     try { hospital.completeTreatment(102, 202, "N/A", "N/A"); }
     catch (const std::logic_error&) { calledCompletionRejected = true; }
     assert(calledCompletionRejected);
+
 
     hospital.completeTreatment(104, 201, "Stable", "Observation");
     assert(h104.getStatus() == PatientStatus::COMPLETED);
@@ -295,6 +404,7 @@ int main() {
     lifecycleBeforeSave.addDoctor(Doctor(703, "Dr Free", "Orthopedic"));
     assert(lifecycleBeforeSave.callNextPatient()->getId() == 602);
     lifecycleBeforeSave.assignDoctor(602, 701);
+    lifecycleBeforeSave.startTreatment(602);
     lifecycleBeforeSave.completeTreatment(602, 701, "Diagnosis X", "Treatment X");
     assert(lifecycleBeforeSave.callNextPatient()->getId() == 603);
     assert(lifecycleBeforeSave.callNextPatient()->getId() == 601);
@@ -307,7 +417,7 @@ int main() {
     lifecycleAfterLoad.loadData(lifecycleData);
     assert(lifecycleAfterLoad.findPatient(602)->getStatus() == PatientStatus::COMPLETED);
     assert(lifecycleAfterLoad.findPatient(603)->getStatus() == PatientStatus::CALLED);
-    assert(lifecycleAfterLoad.findPatient(604)->getStatus() == PatientStatus::UNDER_TREATMENT);
+    assert(lifecycleAfterLoad.findPatient(604)->getStatus() == PatientStatus::ASSIGNED);
     assert(lifecycleAfterLoad.findPatient(605)->getStatus() == PatientStatus::WAITING);
     assert(dynamic_cast<const EmergencyPatient*>(lifecycleAfterLoad.findPatient(602)) != nullptr);
     assert(!lifecycleAfterLoad.findDoctor(702)->isAvailable());
@@ -317,7 +427,7 @@ int main() {
     assert(lifecycleAfterLoad.findTreatment(602)->getDiagnosis() == "Diagnosis X");
     const HospitalStatistics reloadedStats = lifecycleAfterLoad.getStatistics();
     assert(reloadedStats.totalPatients == 5 && reloadedStats.waitingPatients == 1);
-    assert(reloadedStats.calledPatients == 2 && reloadedStats.patientsUnderTreatment == 1);
+    assert(reloadedStats.calledPatients == 2 && reloadedStats.assignedPatients == 1 && reloadedStats.patientsUnderTreatment == 0);
     assert(reloadedStats.completedPatients == 1 && reloadedStats.criticalPatients == 1);
     assert(reloadedStats.averageWaitingTime == 1.0 && reloadedStats.averagePriority == 63.5);
     assert(reloadedStats.availableDoctors == 2 && reloadedStats.busyDoctors == 1);
@@ -331,6 +441,25 @@ int main() {
            readWholeFile(lifecycleResaveData + "/doctors.txt"));
     assert(readWholeFile(lifecycleData + "/treatments.txt") ==
            readWholeFile(lifecycleResaveData + "/treatments.txt"));
+
+    const std::string waitingClockData = "data/test_waiting_clock";
+    Hospital waitingClockBeforeSave;
+    const SystemClock::time_point tenMinutesAgo = SystemClock::now() - std::chrono::minutes(10);
+    waitingClockBeforeSave.registerPatient(std::make_unique<Patient>(606, "Persisted wait", 30,
+        "Check", 2, 0, tenMinutesAgo));
+    waitingClockBeforeSave.saveData(waitingClockData);
+    Hospital waitingClockAfterLoad;
+    waitingClockAfterLoad.loadData(waitingClockData);
+    Patient* persistedWaiting = waitingClockAfterLoad.findPatient(606);
+    assert(persistedWaiting != nullptr && persistedWaiting->getWaitingTime() >= 10);
+    const int waitingAtCall = persistedWaiting->getWaitingTime();
+    waitingClockAfterLoad.callNextPatient();
+    assert(persistedWaiting->getWaitingTimeAt(SystemClock::now() + std::chrono::hours(1)) == waitingAtCall);
+    waitingClockAfterLoad.saveData(waitingClockData);
+    Hospital frozenClockAfterLoad;
+    frozenClockAfterLoad.loadData(waitingClockData);
+    assert(frozenClockAfterLoad.findPatient(606)->getWaitingTimeAt(
+        SystemClock::now() + std::chrono::hours(1)) == waitingAtCall);
 
     const std::string malformedData = "data/test_malformed";
     FileManager(malformedData).saveAll(Hospital());
@@ -354,28 +483,41 @@ int main() {
                           "malformed treatment line\n";
     }
     Hospital malformedLoaded;
-    malformedLoaded.loadData(malformedData);
-    assert(malformedLoaded.findPatient(801) != nullptr);
-    assert(malformedLoaded.findPatient(802) == nullptr);
-    assert(malformedLoaded.findPatient(804) == nullptr);
-    assert(malformedLoaded.findPatient(803) != nullptr);
-    assert(malformedLoaded.findDoctor(811) != nullptr);
-    assert(malformedLoaded.findDoctor(812) == nullptr);
-    assert(malformedLoaded.findTreatment(803) != nullptr);
-    assert(malformedLoaded.getStatistics().totalTreatments == 1);
+    malformedLoaded.registerRegularPatient(899, "Preserved", 20, "Existing", 1);
+    bool malformedRejected = false;
+    try { malformedLoaded.loadData(malformedData); }
+    catch (const std::runtime_error&) { malformedRejected = true; }
+    assert(malformedRejected);
+    assert(malformedLoaded.getStatistics().totalPatients == 1);
+    assert(malformedLoaded.findPatient(899) != nullptr);
+
+    const std::string incompleteData = "data/test_incomplete";
+    FileManager(incompleteData).saveAll(Hospital());
+    std::remove((incompleteData + "/doctors.txt").c_str());
+    bool incompleteRejected = false;
+    try { malformedLoaded.loadData(incompleteData); }
+    catch (const std::runtime_error&) { incompleteRejected = true; }
+    assert(incompleteRejected && malformedLoaded.findPatient(899) != nullptr);
 
     const std::string missingData = "data/test_missing_directory";
     Hospital missingLoaded;
-    missingLoaded.registerRegularPatient(899, "Will be cleared", 20, "Temporary", 1);
-    missingLoaded.loadData(missingData);
-    assert(missingLoaded.getStatistics().totalPatients == 0);
-    assert(missingLoaded.getStatistics().totalTreatments == 0);
+    missingLoaded.registerRegularPatient(899, "Preserved", 20, "Temporary", 1);
+    bool missingRejected = false;
+    try { missingLoaded.loadData(missingData); }
+    catch (const std::runtime_error&) { missingRejected = true; }
+    assert(missingRejected);
+    assert(missingLoaded.getStatistics().totalPatients == 1);
+    assert(missingLoaded.findPatient(899) != nullptr);
 
     removeTestDirectory(queueData);
     removeTestDirectory(secondQueueData);
     removeTestDirectory(lifecycleData);
     removeTestDirectory(lifecycleResaveData);
+    removeTestDirectory(waitingClockData);
+    removeTestDirectory(assignedClockData);
+    removeTestDirectory(legacyWaitingData);
     removeTestDirectory(malformedData);
+    removeTestDirectory(incompleteData);
 
     std::cout << "Phase 1 through Phase 4 checks passed.\n";
 }

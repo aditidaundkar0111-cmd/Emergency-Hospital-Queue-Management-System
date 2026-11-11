@@ -21,4 +21,5 @@ private:
     std::string directory_;
     std::string filePath(const std::string& fileName) const;
     void ensureDirectory() const;
+    void loadPatients(Hospital& hospital, bool& legacyWaitingTimestampFound) const;
 };

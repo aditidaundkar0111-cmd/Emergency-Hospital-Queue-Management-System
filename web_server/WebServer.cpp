@@ -10,9 +10,15 @@
 
 namespace {
 using Json = nlohmann::json;
+bool allowedOrigin(const httplib::Request& request) {
+    const std::string origin = request.get_header_value("Origin");
+    if (origin == "http://localhost:8080" || origin == "http://127.0.0.1:8080")
+        return true;
+    return false;
+}
 
-void sendJson(httplib::Response& response, int status, const Json& body) {
-    response.set_header("Access-Control-Allow-Origin", "*");
+void sendJson(const httplib::Request& request, httplib::Response& response, int status, const Json& body) {
+    if (allowedOrigin(request)) response.set_header("Access-Control-Allow-Origin", request.get_header_value("Origin"));
     response.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     response.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
     response.set_header("Cache-Control", "no-store");
@@ -20,8 +26,8 @@ void sendJson(httplib::Response& response, int status, const Json& body) {
     response.set_content(body.dump(), "application/json; charset=utf-8");
 }
 
-void setCorsHeaders(const httplib::Request&, httplib::Response& response) {
-    response.set_header("Access-Control-Allow-Origin", "*");
+void setCorsHeaders(const httplib::Request& request, httplib::Response& response) {
+    if (allowedOrigin(request)) response.set_header("Access-Control-Allow-Origin", request.get_header_value("Origin"));
     response.set_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     response.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
@@ -37,7 +43,7 @@ bool requireAuth(const UserManager& users, const httplib::Request& request,
                  httplib::Response& response) {
     AuthUser user;
     if (users.findSession(sessionToken(request), user)) return true;
-    sendJson(response, 401, Json{{"error", "Please sign in to continue."}});
+    sendJson(request, response, 401, Json{{"error", "Please sign in to continue."}});
     return false;
 }
 
@@ -63,15 +69,15 @@ int errorStatus(const std::exception& error) {
 }
 
 template <typename Handler>
-void guarded(httplib::Response& response, Handler handler) {
+void guarded(const httplib::Request& request, httplib::Response& response, Handler handler) {
     try {
         handler();
     } catch (const Json::exception& error) {
-        sendJson(response, 400, errorJson(std::string("Invalid JSON request: ") + error.what()));
+        sendJson(request, response, 400, errorJson(std::string("Invalid JSON request: ") + error.what()));
     } catch (const std::exception& error) {
-        sendJson(response, errorStatus(error), errorJson(error.what()));
+        sendJson(request, response, errorStatus(error), errorJson(error.what()));
     } catch (...) {
-        sendJson(response, 500, errorJson("Unexpected server error."));
+        sendJson(request, response, 500, errorJson("Unexpected server error."));
     }
 }
 
@@ -141,9 +147,11 @@ Json dashboardJson(const Hospital& hospital) {
     return Json{{"totalPatients", stats.totalPatients},
                 {"waitingPatients", stats.waitingPatients},
                 {"calledPatients", stats.calledPatients},
+                {"assignedPatients", stats.assignedPatients},
                 {"underTreatment", stats.patientsUnderTreatment},
                 {"completedPatients", stats.completedPatients},
                 {"criticalPatients", stats.criticalPatients},
+                {"totalDoctors", hospital.getDoctors().size()},
                 {"availableDoctors", stats.availableDoctors},
                 {"busyDoctors", stats.busyDoctors},
                 {"totalTreatments", stats.totalTreatments},
@@ -188,8 +196,8 @@ WebServer::WebServer(Hospital& hospital, const std::string& webDirectory,
     if (!frontendMounted) {
         std::cerr << "Frontend directory not available at " << webDirectory
                   << "; API will run without static files.\n";
-        server_.Get("/", [](const httplib::Request&, httplib::Response& response) {
-            sendJson(response, 503, errorJson("Frontend files are unavailable; place the UI in web/."));
+        server_.Get("/", [](const httplib::Request& request, httplib::Response& response) {
+            sendJson(request, response, 503, errorJson("Frontend files are unavailable; place the UI in web/."));
         });
     }
 }
@@ -201,69 +209,69 @@ bool WebServer::listen(const std::string& host, int port) {
 void WebServer::stop() { server_.stop(); }
 
 void WebServer::registerRoutes() {
-    server_.Options(R"(/api/.*)", [](const httplib::Request&, httplib::Response& response) {
-        setCorsHeaders(httplib::Request(), response);
+    server_.Options(R"(/api/.*)", [](const httplib::Request& request, httplib::Response& response) {
+        setCorsHeaders(request, response);
         response.status = 204;
     });
 
     server_.Post("/api/auth/register", [this](const httplib::Request& request, httplib::Response& response) {
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             const Json body = Json::parse(request.body);
             const AuthUser user = userManager_.registerUser(
                 requiredValue<std::string>(body, "fullName"),
                 requiredValue<std::string>(body, "username"),
                 requiredValue<std::string>(body, "password"));
-            sendJson(response, 201, Json{{"success", true}, {"user", authUserJson(user)}});
+            sendJson(request, response, 201, Json{{"success", true}, {"user", authUserJson(user)}});
         });
     });
 
     server_.Post("/api/auth/login", [this](const httplib::Request& request, httplib::Response& response) {
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             const Json body = Json::parse(request.body);
             const AuthSession session = userManager_.login(
                 requiredValue<std::string>(body, "username"),
                 requiredValue<std::string>(body, "password"));
-            sendJson(response, 200, Json{{"success", true}, {"token", session.token},
+            sendJson(request, response, 200, Json{{"success", true}, {"token", session.token},
                                          {"user", authUserJson(session.user)}});
         });
     });
 
     server_.Post("/api/auth/logout", [this](const httplib::Request& request, httplib::Response& response) {
         userManager_.logout(sessionToken(request));
-        sendJson(response, 200, Json{{"success", true}});
+        sendJson(request, response, 200, Json{{"success", true}});
     });
 
     server_.Get("/api/auth/me", [this](const httplib::Request& request, httplib::Response& response) {
         AuthUser user;
         if (!userManager_.findSession(sessionToken(request), user))
-            sendJson(response, 401, Json{{"error", "Please sign in to continue."}});
-        else sendJson(response, 200, authUserJson(user));
+            sendJson(request, response, 401, Json{{"error", "Please sign in to continue."}});
+        else sendJson(request, response, 200, authUserJson(user));
     });
 
     server_.Get("/api/dashboard", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] { sendJson(response, 200, dashboardJson(hospital_)); });
+        guarded(request, response, [&] { sendJson(request, response, 200, dashboardJson(hospital_)); });
     });
 
     server_.Get("/api/patients", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] { sendJson(response, 200, patientList(hospital_)); });
+        guarded(request, response, [&] { sendJson(request, response, 200, patientList(hospital_)); });
     });
 
     server_.Get(R"(/api/patients/([0-9]+))",
         [this](const httplib::Request& request, httplib::Response& response) {
             if (!requireAuth(userManager_, request, response)) return;
-            guarded(response, [&] {
+            guarded(request, response, [&] {
                 const int id = parseId(request.matches[1]);
                 const Patient* patient = hospital_.findPatient(id);
-                if (patient == nullptr) sendJson(response, 404, errorJson("Patient not found"));
-                else sendJson(response, 200, patientJson(*patient));
+                if (patient == nullptr) sendJson(request, response, 404, errorJson("Patient not found"));
+                else sendJson(request, response, 200, patientJson(*patient));
             });
         });
 
     server_.Post("/api/patients", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             const Json body = Json::parse(request.body);
             const int id = requiredValue<int>(body, "id");
             const std::string name = requiredValue<std::string>(body, "name");
@@ -283,13 +291,13 @@ void WebServer::registerRoutes() {
             } else {
                 throw std::invalid_argument("Patient type must be 'emergency' or 'regular'.");
             }
-            sendJson(response, 201, patientJson(*patient));
+            sendJson(request, response, 201, patientJson(*patient));
         });
     });
 
     server_.Get("/api/queue", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             Json queue = Json::array();
             for (const Patient* patient : hospital_.getWaitingPatients()) {
                 queue.push_back(Json{{"id", patient->getId()}, {"name", patient->getName()},
@@ -297,91 +305,91 @@ void WebServer::registerRoutes() {
                     {"waitingTime", patient->getWaitingTime()}, {"status", toString(patient->getStatus())},
                     {"critical", isCritical(*patient)}});
             }
-            sendJson(response, 200, queue);
+            sendJson(request, response, 200, queue);
         });
     });
 
     server_.Post("/api/queue/call-next", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             Patient* patient = hospital_.callNextPatient();
-            if (patient == nullptr) sendJson(response, 409, errorJson("Waiting queue is empty"));
-            else sendJson(response, 200, patientJson(*patient));
+            if (patient == nullptr) sendJson(request, response, 409, errorJson("Waiting queue is empty"));
+            else sendJson(request, response, 200, patientJson(*patient));
         });
     });
 
     server_.Get("/api/doctors", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] { sendJson(response, 200, doctorList(hospital_)); });
+        guarded(request, response, [&] { sendJson(request, response, 200, doctorList(hospital_)); });
     });
 
     server_.Post("/api/doctors", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             const Json body = Json::parse(request.body);
             const int id = requiredValue<int>(body, "id");
             const std::string name = requiredValue<std::string>(body, "name");
             const std::string specialization = requiredValue<std::string>(body, "specialization");
             hospital_.addDoctor(Doctor(id, name, specialization));
-            sendJson(response, 201, doctorJson(*hospital_.findDoctor(id)));
+            sendJson(request, response, 201, doctorJson(*hospital_.findDoctor(id)));
         });
     });
 
     server_.Post(R"(/api/patients/([0-9]+)/assign-doctor)",
         [this](const httplib::Request& request, httplib::Response& response) {
             if (!requireAuth(userManager_, request, response)) return;
-            guarded(response, [&] {
+            guarded(request, response, [&] {
                 const int patientId = parseId(request.matches[1]);
                 const Json body = Json::parse(request.body);
                 const int doctorId = requiredValue<int>(body, "doctorId");
                 hospital_.assignDoctor(patientId, doctorId);
                 const Patient* patient = hospital_.findPatient(patientId);
-                sendJson(response, 200, patientJson(*patient));
+                sendJson(request, response, 200, patientJson(*patient));
             });
         });
 
     server_.Post(R"(/api/patients/([0-9]+)/start-treatment)",
         [this](const httplib::Request& request, httplib::Response& response) {
             if (!requireAuth(userManager_, request, response)) return;
-            guarded(response, [&] {
+            guarded(request, response, [&] {
                 const int patientId = parseId(request.matches[1]);
                 hospital_.startTreatment(patientId);
-                sendJson(response, 200, Json{{"success", true}, {"message", "Treatment is in progress"}});
+                sendJson(request, response, 200, Json{{"success", true}, {"message", "Treatment is in progress"}});
             });
         });
 
     server_.Post(R"(/api/patients/([0-9]+)/complete-treatment)",
         [this](const httplib::Request& request, httplib::Response& response) {
             if (!requireAuth(userManager_, request, response)) return;
-            guarded(response, [&] {
+            guarded(request, response, [&] {
                 const int patientId = parseId(request.matches[1]);
                 const Json body = Json::parse(request.body);
                 const int doctorId = requiredValue<int>(body, "doctorId");
                 const std::string diagnosis = requiredValue<std::string>(body, "diagnosis");
                 const std::string description = requiredValue<std::string>(body, "description");
                 hospital_.completeTreatment(patientId, doctorId, diagnosis, description);
-                sendJson(response, 200, patientJson(*hospital_.findPatient(patientId)));
+                sendJson(request, response, 200, patientJson(*hospital_.findPatient(patientId)));
             });
         });
 
     server_.Get("/api/treatments", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] { sendJson(response, 200, treatmentList(hospital_)); });
+        guarded(request, response, [&] { sendJson(request, response, 200, treatmentList(hospital_)); });
     });
 
     server_.Post("/api/data/save", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             hospital_.saveData();
-            sendJson(response, 200, Json{{"success", true}, {"message", "Data saved successfully"}});
+            sendJson(request, response, 200, Json{{"success", true}, {"message", "Data saved successfully"}});
         });
     });
 
     server_.Post("/api/data/load", [this](const httplib::Request& request, httplib::Response& response) {
         if (!requireAuth(userManager_, request, response)) return;
-        guarded(response, [&] {
+        guarded(request, response, [&] {
             hospital_.loadData();
-            sendJson(response, 200, Json{{"success", true}, {"message", "Data loaded successfully"},
+            sendJson(request, response, 200, Json{{"success", true}, {"message", "Data loaded successfully"},
                                          {"dashboard", dashboardJson(hospital_)},
                                          {"patients", patientList(hospital_)}});
         });

@@ -118,7 +118,7 @@ int main() {
                         const int patientId = readInteger("Patient ID: ", 1, std::numeric_limits<int>::max());
                         const int doctorId = readInteger("Doctor ID: ", 1, std::numeric_limits<int>::max());
                         hospital.assignDoctor(patientId, doctorId);
-                        std::cout << "Doctor assigned; patient is UNDER_TREATMENT.\n";
+                        std::cout << "Doctor assigned; patient is ASSIGNED.\n";
                         break;
                     }
                     case 11:

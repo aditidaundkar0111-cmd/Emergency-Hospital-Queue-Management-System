@@ -4,6 +4,7 @@
 #include "Hospital.h"
 #include "RegularPatient.h"
 #include <cerrno>
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -11,10 +12,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <sys/stat.h>
 #if defined(_WIN32)
 #include <direct.h>
-#else
-#include <sys/stat.h>
 #endif
 
 namespace {
@@ -22,6 +22,7 @@ std::string statusToText(PatientStatus status) {
     switch (status) {
         case PatientStatus::WAITING: return "WAITING";
         case PatientStatus::CALLED: return "CALLED";
+        case PatientStatus::ASSIGNED: return "ASSIGNED";
         case PatientStatus::UNDER_TREATMENT: return "UNDER_TREATMENT";
         case PatientStatus::COMPLETED: return "COMPLETED";
     }
@@ -31,6 +32,7 @@ std::string statusToText(PatientStatus status) {
 PatientStatus parseStatus(const std::string& value) {
     if (value == "WAITING") return PatientStatus::WAITING;
     if (value == "CALLED") return PatientStatus::CALLED;
+    if (value == "ASSIGNED") return PatientStatus::ASSIGNED;
     if (value == "UNDER_TREATMENT") return PatientStatus::UNDER_TREATMENT;
     if (value == "COMPLETED") return PatientStatus::COMPLETED;
     throw std::invalid_argument("Invalid patient status: " + value);
@@ -41,6 +43,16 @@ bool isIgnorableLine(const std::string& line) {
     return first == std::string::npos || line[first] == '#';
 }
 
+bool pathExists(const std::string& path) {
+#if defined(_WIN32)
+    struct _stat info;
+    return _stat(path.c_str(), &info) == 0 && (info.st_mode & _S_IFREG) != 0;
+#else
+    struct stat info;
+    return stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
+#endif
+}
+
 void requireEndOfRecord(std::istringstream& record) {
     std::string extra;
     if (record >> extra) throw std::invalid_argument("Unexpected extra field.");
@@ -48,8 +60,8 @@ void requireEndOfRecord(std::istringstream& record) {
 
 void reportBadRecord(const std::string& path, std::size_t lineNumber,
                      const std::string& reason) {
-    std::cerr << "Skipping malformed record in " << path << ':' << lineNumber
-              << " (" << reason << ").\n";
+    throw std::runtime_error("Invalid record in " + path + ':' + std::to_string(lineNumber) +
+                             " (" + reason + "). Existing application data was preserved.");
 }
 }
 
@@ -86,7 +98,7 @@ void FileManager::savePatients(const Hospital& hospital) const {
     const std::string path = filePath("patients.txt");
     std::ofstream output(path.c_str(), std::ios::trunc);
     if (!output) throw std::runtime_error("Could not open patient data file for writing: " + path);
-    output << "# P id type age severity wait critical status \"name\" \"condition\"\n";
+    output << "# P id type age severity wait critical status \"name\" \"condition\" [waitingStartedEpochSeconds]\n";
     for (const auto& patient : hospital.patients_) {
         std::string type = "BASE";
         int critical = 0;
@@ -96,16 +108,26 @@ void FileManager::savePatients(const Hospital& hospital) const {
         } else if (dynamic_cast<const RegularPatient*>(patient.get()) != nullptr) {
             type = "REGULAR";
         }
+        const long long waitingStartedEpochSeconds = patient->getStatus() == PatientStatus::WAITING
+            ? std::chrono::duration_cast<std::chrono::seconds>(
+                  patient->waitingStartedAt_.time_since_epoch()).count()
+            : -1;
         output << "P " << patient->getId() << ' ' << type << ' ' << patient->getAge() << ' '
-               << patient->getSeverity() << ' ' << patient->getWaitingTime() << ' '
+               << patient->getSeverity() << ' ' << patient->waitingMinutes_ << ' '
                << critical << ' ' << statusToText(patient->getStatus()) << ' '
                << std::quoted(patient->getName()) << ' '
-               << std::quoted(patient->getCondition()) << '\n';
+               << std::quoted(patient->getCondition()) << ' '
+               << waitingStartedEpochSeconds << '\n';
     }
     if (!output) throw std::runtime_error("Failed while writing patient data: " + path);
 }
 
 void FileManager::loadPatients(Hospital& hospital) const {
+    bool legacyWaitingTimestampFound = false;
+    loadPatients(hospital, legacyWaitingTimestampFound);
+}
+
+void FileManager::loadPatients(Hospital& hospital, bool& legacyWaitingTimestampFound) const {
     const std::string path = filePath("patients.txt");
     std::ifstream input(path.c_str());
     if (!input) {
@@ -121,11 +143,24 @@ void FileManager::loadPatients(Hospital& hospital) const {
             std::istringstream record(line);
             char tag = '\0';
             int id = 0, age = 0, severity = 0, waiting = 0, critical = 0;
+            long long waitingStartedEpochSeconds = -1;
             std::string type, statusText, name, condition;
             if (!(record >> tag >> id >> type >> age >> severity >> waiting >> critical
                          >> statusText >> std::quoted(name) >> std::quoted(condition)) || tag != 'P')
                 throw std::invalid_argument("Invalid patient record format.");
+            record >> std::ws;
+            const bool hasWaitingTimestamp = record.peek() != std::char_traits<char>::eof();
+            if (hasWaitingTimestamp && !(record >> waitingStartedEpochSeconds))
+                throw std::invalid_argument("Invalid waiting start timestamp.");
             requireEndOfRecord(record);
+            if (waitingStartedEpochSeconds < -1)
+                throw std::invalid_argument("Invalid waiting start timestamp.");
+            if (waitingStartedEpochSeconds >= 0) {
+                const long long latestAllowed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() + 86400;
+                if (waitingStartedEpochSeconds > latestAllowed)
+                    throw std::invalid_argument("Waiting start timestamp is in the future.");
+            }
             if ((critical != 0 && critical != 1) || (type != "BASE" && type != "REGULAR" && type != "EMERGENCY"))
                 throw std::invalid_argument("Invalid patient type or critical flag.");
             if (type != "EMERGENCY" && critical != 0)
@@ -140,6 +175,10 @@ void FileManager::loadPatients(Hospital& hospital) const {
             else
                 patient = std::make_unique<Patient>(id, name, age, condition, severity, waiting);
             hospital.restorePatient(std::move(patient), status);
+            if (status == PatientStatus::WAITING && waitingStartedEpochSeconds >= 0)
+                hospital.findPatient(id)->setWaitingStartedAtEpochSeconds(waitingStartedEpochSeconds);
+            else if (status == PatientStatus::WAITING && waitingStartedEpochSeconds < 0)
+                legacyWaitingTimestampFound = true;
         } catch (const std::exception& error) {
             reportBadRecord(path, lineNumber, error.what());
         }
@@ -185,8 +224,9 @@ void FileManager::loadDoctors(Hospital& hospital) const {
                 throw std::invalid_argument("Invalid doctor availability value.");
             if (available == 0) {
                 const Patient* patient = hospital.findPatient(currentPatientId);
-                if (patient == nullptr || patient->getStatus() != PatientStatus::UNDER_TREATMENT)
-                    throw std::invalid_argument("Busy doctor references no under-treatment patient.");
+                if (patient == nullptr || (patient->getStatus() != PatientStatus::ASSIGNED &&
+                                           patient->getStatus() != PatientStatus::UNDER_TREATMENT))
+                    throw std::invalid_argument("Busy doctor references no assigned patient.");
                 for (const Doctor& existing : hospital.doctorManager_.doctors_)
                     if (!existing.isAvailable() && existing.getCurrentPatientId() == currentPatientId)
                         throw std::invalid_argument("Patient is assigned to more than one doctor.");
@@ -254,25 +294,34 @@ void FileManager::saveAll(const Hospital& hospital) const {
 }
 
 void FileManager::loadAll(Hospital& hospital) const {
+    const std::string paths[] = {filePath("patients.txt"), filePath("doctors.txt"), filePath("treatments.txt")};
+    int existingFiles = 0;
+    for (const std::string& path : paths) if (pathExists(path)) ++existingFiles;
+    if (existingFiles != 0 && existingFiles != 3)
+        throw std::runtime_error("Hospital data set is incomplete; all three data files are required. Existing application data was preserved.");
+    if (existingFiles == 0 && (hospital.getStatistics().totalPatients != 0 ||
+        !hospital.getDoctors().empty() || !hospital.getTreatments().empty()))
+        throw std::runtime_error("No saved hospital data files were found. Existing application data was preserved.");
     Hospital loaded;
-    loadPatients(loaded);
+    bool legacyWaitingTimestampFound = false;
+    loadPatients(loaded, legacyWaitingTimestampFound);
     loadDoctors(loaded);
 
-    std::vector<int> unassignedPatients;
     for (const auto& patient : loaded.patients_) {
-        if (patient->getStatus() != PatientStatus::UNDER_TREATMENT) continue;
+        if (patient->getStatus() != PatientStatus::UNDER_TREATMENT &&
+            patient->getStatus() != PatientStatus::ASSIGNED) continue;
         bool hasAssignedDoctor = false;
         for (const Doctor& doctor : loaded.doctorManager_.doctors_)
             if (!doctor.isAvailable() && doctor.getCurrentPatientId() == patient->getId())
                 hasAssignedDoctor = true;
         if (!hasAssignedDoctor) {
-            std::cerr << "Skipping under-treatment patient " << patient->getId()
-                      << ": no valid busy doctor assignment was loaded.\n";
-            unassignedPatients.push_back(patient->getId());
+            throw std::runtime_error("Patient " + std::to_string(patient->getId()) +
+                                     " has no valid busy doctor assignment. Existing application data was preserved.");
         }
     }
-    for (int patientId : unassignedPatients) loaded.discardPatient(patientId);
 
     loadTreatments(loaded);
+    // Persist the one-time fallback clock only after every file and relationship validates.
+    if (legacyWaitingTimestampFound) savePatients(loaded);
     hospital.replaceWith(std::move(loaded));
 }

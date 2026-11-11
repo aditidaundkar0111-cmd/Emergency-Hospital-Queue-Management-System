@@ -38,7 +38,7 @@ try {
     foreach ($expected in @(
         'Invalid number. Please try again.',
         'Patient registered in WAITING status.',
-        'Doctor assigned; patient is UNDER_TREATMENT.',
+        'Doctor assigned; patient is ASSIGNED.',
         'Treatment completed.',
         'Data saved. Exiting.',
         'Diagnosis: DX-ALPHA | Treatment: TX-BETA | Completed',

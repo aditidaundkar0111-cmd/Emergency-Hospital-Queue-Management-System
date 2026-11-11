@@ -10,6 +10,7 @@ struct HospitalStatistics {
     std::size_t totalPatients = 0;
     std::size_t waitingPatients = 0;
     std::size_t calledPatients = 0;
+    std::size_t assignedPatients = 0;
     std::size_t patientsUnderTreatment = 0;
     std::size_t completedPatients = 0;
     std::size_t criticalPatients = 0;

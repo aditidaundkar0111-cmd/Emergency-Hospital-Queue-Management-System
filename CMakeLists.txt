@@ -30,7 +30,7 @@ if(BUILD_TESTING)
     target_link_libraries(emergency_hospital_tests PRIVATE hospital_core)
     add_test(NAME hospital_regression_tests COMMAND emergency_hospital_tests)
     set_tests_properties(hospital_regression_tests PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
     include(CheckCXXSourceCompiles)
     check_cxx_source_compiles("#include <thread>\nint main() { std::thread t([]{}); t.join(); }"
@@ -50,7 +50,7 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME hospital_web_api_tests COMMAND emergency_hospital_web_tests)
         set_tests_properties(hospital_web_api_tests PROPERTIES
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     else()
         message(STATUS "Skipping the threaded HTTP API test harness; compiler lacks std::thread")
     endif()

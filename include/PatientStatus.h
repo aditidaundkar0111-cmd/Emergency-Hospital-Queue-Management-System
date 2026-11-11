@@ -4,6 +4,7 @@
 enum class PatientStatus {
     WAITING,
     CALLED,
+    ASSIGNED,
     UNDER_TREATMENT,
     COMPLETED
 };

@@ -51,12 +51,12 @@ Patient* Hospital::findPatient(int patientId) { return patientQueue_.findPatient
 const Patient* Hospital::findPatient(int patientId) const { return patientQueue_.findPatient(patientId); }
 void Hospital::displayDoctors() const { doctorManager_.displayAllDoctors(); }
 
-Patient* Hospital::callNextPatient() {
+Patient* Hospital::callNextPatient(std::chrono::system_clock::time_point now) {
     Patient* patient = patientQueue_.getNextPatient();
     if (patient == nullptr) return nullptr;
     if (patient->getStatus() != PatientStatus::WAITING)
         throw std::logic_error("Only a WAITING patient can be called.");
-    patient->setStatus(PatientStatus::CALLED);
+    patient->setStatusAt(PatientStatus::CALLED, now);
     return patient;
 }
 
@@ -69,14 +69,22 @@ void Hospital::assignDoctor(int patientId, int doctorId) {
     if (patient->getStatus() != PatientStatus::CALLED)
         throw std::logic_error("A doctor can only be assigned to a CALLED patient.");
     doctor->assignPatient(patientId);
-    patient->setStatus(PatientStatus::UNDER_TREATMENT);
+    patient->setStatus(PatientStatus::ASSIGNED);
 }
 
-void Hospital::startTreatment(int patientId) const {
-    const Patient* patient = findPatient(patientId);
+void Hospital::startTreatment(int patientId) {
+    Patient* patient = findPatient(patientId);
     if (patient == nullptr) throw std::invalid_argument("Patient ID was not found.");
-    if (patient->getStatus() != PatientStatus::UNDER_TREATMENT)
-        throw std::logic_error("Treatment can start only after an available doctor is assigned.");
+    if (patient->getStatus() != PatientStatus::ASSIGNED)
+        throw std::logic_error("Treatment can start only after a doctor is assigned.");
+    const Doctor* assignedDoctor = nullptr;
+    for (const Doctor& doctor : doctorManager_.getDoctors())
+        if (!doctor.isAvailable() && doctor.getCurrentPatientId() == patientId) {
+            assignedDoctor = &doctor;
+            break;
+        }
+    if (assignedDoctor == nullptr) throw std::logic_error("Assigned doctor was not found.");
+    patient->setStatus(PatientStatus::UNDER_TREATMENT);
 }
 
 void Hospital::completeTreatment(int patientId, int doctorId,
@@ -92,9 +100,9 @@ void Hospital::completeTreatment(int patientId, int doctorId,
         throw std::logic_error("The specified doctor is not assigned to this patient.");
 
     Treatment treatment(patientId, doctorId, diagnosis, description, true);
+    treatmentManager_.addTreatment(treatment);
     doctor->completeTreatment();
     patient->setStatus(PatientStatus::COMPLETED);
-    treatmentManager_.addTreatment(treatment);
 }
 
 const Treatment* Hospital::findTreatment(int patientId) const {
@@ -118,8 +126,10 @@ void Hospital::restorePatient(std::unique_ptr<Patient> patient, PatientStatus st
     if (!patient) throw std::invalid_argument("Cannot restore a null patient.");
     if (findPatient(patient->getId()) != nullptr)
         throw std::invalid_argument("Patient ID is already registered.");
-    if (status == PatientStatus::CALLED || status == PatientStatus::UNDER_TREATMENT ||
+    if (status == PatientStatus::CALLED || status == PatientStatus::ASSIGNED || status == PatientStatus::UNDER_TREATMENT ||
         status == PatientStatus::COMPLETED) patient->setStatus(PatientStatus::CALLED);
+    if (status == PatientStatus::ASSIGNED || status == PatientStatus::UNDER_TREATMENT || status == PatientStatus::COMPLETED)
+        patient->setStatus(PatientStatus::ASSIGNED);
     if (status == PatientStatus::UNDER_TREATMENT || status == PatientStatus::COMPLETED)
         patient->setStatus(PatientStatus::UNDER_TREATMENT);
     if (status == PatientStatus::COMPLETED) patient->setStatus(PatientStatus::COMPLETED);

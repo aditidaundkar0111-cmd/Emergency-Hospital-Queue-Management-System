@@ -6,6 +6,7 @@
 #include "RegularPatient.h"
 #include "StatisticsManager.h"
 #include "TreatmentManager.h"
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,9 +26,10 @@ public:
     Patient* findPatient(int patientId);
     const Patient* findPatient(int patientId) const;
     void displayDoctors() const;
-    Patient* callNextPatient();
+    Patient* callNextPatient(std::chrono::system_clock::time_point now =
+                             std::chrono::system_clock::now());
     void assignDoctor(int patientId, int doctorId);
-    void startTreatment(int patientId) const;
+    void startTreatment(int patientId);
     void completeTreatment(int patientId, int doctorId, const std::string& diagnosis,
                            const std::string& description);
     const Treatment* findTreatment(int patientId) const;
